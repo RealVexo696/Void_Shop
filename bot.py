@@ -30,15 +30,15 @@ def keep_alive():
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s')
 logger = logging.getLogger('void_shop_bot')
 
-# ==================================================
-#                  KONFIGURATION
-# ==================================================
+# ==============================================================================
+#                                KONFIGURATION
+# ==============================================================================
 # Trage hier direkt deinen Discord Bot-Token ein!
-TOKEN = "MTUyMDE3MDg0MTQ2NjQ3MDUyMQ.GbIcAF.OBOLoyO8IKC3sbfr1oVuWEMwAw4PphQXy4RCWQ"
+TOKEN = "MTUyMDE3MDg0MTQ2NjQ3MDUyMQ.GbIcAF.OBOLoyO8IKC3sbfr1oVuWEMwAw4PphQXy4RCWQ"  
 
 # Der Prefix für deine Befehle (Standard ist !)
 PREFIX = "!"
-# ==================================================
+# ==============================================================================
 
 
 # --- GLOBAL EMBED FACTORY ---
@@ -194,7 +194,7 @@ class RobloxVerifyView(discord.ui.View):
         self.stop()
 
 
-# --- PERSISTENTE TICKET-ANSICHTEN (TICKET SYSTEM MIT CLAIM & LOGGING) ---
+# --- TICKET SYSTEM (MIT CLAIM & TRANSCRIPT) ---
 
 class CloseTicketView(discord.ui.View):
     """View für den Ticket-Schließen & Ticket-Claimen Button im Ticket."""
@@ -212,27 +212,21 @@ class CloseTicketView(discord.ui.View):
         channel = interaction.channel
         member = interaction.user
 
-        # Berechtigungs-Prüfung: Darf der User überhaupt Tickets betreuen?
         support_role = discord.utils.get(guild.roles, name="🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁")
         mod_role = discord.utils.get(guild.roles, name="🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿")
         admin_role = discord.utils.get(guild.roles, name="🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻")
         owner_role = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿")
 
-        # Prüfe ob der User eine Teamrolle besitzt
         has_staff_role = any(role in [support_role, mod_role, admin_role, owner_role] for role in member.roles)
         if not has_staff_role and not member.guild_permissions.administrator:
             await interaction.response.send_message("❌ Du gehörst nicht zum Support-Team!", ephemeral=True)
             return
 
-        # Deaktiviere den Claim-Button
         button.disabled = True
         button.label = "Ticket geclaimed"
         button.style = discord.ButtonStyle.secondary
         
-        # Rechte im Ticket anpassen: Nur noch der Ersteller und das claimende Staff-Mitglied dürfen schreiben!
-        # Andere Supporter können den Ticket-Verlauf weiterhin mitlesen, aber nicht mehr stören.
         try:
-            # Finde den Ticketersteller (über die Topic oder Berechtigungen)
             ticket_creator = None
             for overwrite_target, overwrite_value in channel.overwrites.items():
                 if isinstance(overwrite_target, discord.Member) and not overwrite_target.bot:
@@ -247,14 +241,12 @@ class CloseTicketView(discord.ui.View):
             if ticket_creator:
                 overwrites[ticket_creator] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-            # Andere Staff-Rollen dürfen nur noch lesen
             for role in [support_role, mod_role, admin_role, owner_role]:
                 if role and role != guild.default_role:
                     overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
 
             await channel.edit(overwrites=overwrites)
 
-            # Sende Claim-Embed
             claim_embed = create_prestige_embed(
                 title="🙋‍♂️ Ticket geclaimed!",
                 description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
@@ -265,11 +257,8 @@ class CloseTicketView(discord.ui.View):
                 bot_user=interaction.client.user
             )
             await channel.send(embed=claim_embed)
-
-            # Update die ursprüngliche Nachricht des Buttons
             await interaction.response.edit_message(view=self)
 
-            # In die System-Logs schreiben
             ticket_logs_channel = discord.utils.get(guild.text_channels, name="💾│ticket-logs")
             if ticket_logs_channel:
                 log_claim = create_prestige_embed(
@@ -412,7 +401,7 @@ class TicketButton(discord.ui.View):
             )
             return
 
-        owner_role = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿")
+        owner_role = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲rer")
         co_owner_role = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿")
         admin_role = discord.utils.get(guild.roles, name="🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻")
         manager_role = discord.utils.get(guild.roles, name="⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿")
@@ -491,7 +480,6 @@ class TicketButton(discord.ui.View):
                 if role: staff_pings.append(role.mention)
             pings_str = " ".join(staff_pings) if staff_pings else ""
 
-            # Sende mit Claim- und Close-Button
             await ticket_channel.send(
                 content=f"{member.mention} {pings_str}", 
                 embed=embed, 
@@ -571,7 +559,6 @@ async def update_stats_task():
     """Aktualisiert alle 10 Minuten die Namen der Server-Statistik Kanäle."""
     logger.info("Starte Aktualisierung der Server-Statistiken...")
     for guild in bot.guilds:
-        # Finde Daten
         member_count = len(guild.members)
         booster_count = guild.premium_subscription_count
         
@@ -613,7 +600,6 @@ async def verify_command(ctx, roblox_username: str = None):
         await ctx.send(embed=embed_help)
         return
 
-    # Sende Zwischen-Status
     progress_embed = create_prestige_embed(
         title="🔍 Suche Roblox-Konto...",
         description=f"> Kontaktiere die Roblox Server für **'{roblox_username}'**...",
@@ -636,7 +622,6 @@ async def verify_command(ctx, roblox_username: str = None):
         await status_msg.edit(embed=embed_err)
         return
 
-    # Hole Profilbild des Users
     avatar_url = await get_roblox_avatar(roblox_id)
 
     confirm_embed = create_prestige_embed(
@@ -702,14 +687,12 @@ async def checkbuy_command(ctx, roblox_username: str = None, gamepass_id: int = 
         await status_msg.edit(embed=embed_err)
         return
 
-    # Check ownership API
     has_purchased = await check_roblox_ownership(roblox_id, gamepass_id)
 
     if has_purchased:
         guild = ctx.guild
         member = ctx.author
 
-        # Customer & Premium Buyer Rollen holen
         customer_role = discord.utils.get(guild.roles, name="🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿")
         premium_buyer_role = discord.utils.get(guild.roles, name="💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿")
 
@@ -740,7 +723,6 @@ async def checkbuy_command(ctx, roblox_username: str = None, gamepass_id: int = 
             
             await status_msg.edit(embed=success_embed)
 
-            # In logs eintragen
             log_channel = discord.utils.get(guild.text_channels, name="⚙️│system-logs")
             if log_channel:
                 log_embed = create_prestige_embed(
@@ -1050,7 +1032,7 @@ async def start(ctx):
     r_member = discord.utils.get(guild.roles, name="👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿") or r_everyone
     r_customer = discord.utils.get(guild.roles, name="🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿") or r_everyone
     r_premium_buyer = discord.utils.get(guild.roles, name="💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿") or r_everyone
-    r_vip = discord.utils.get(guild.roles, name="🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣") or r_everyone
+    r_vip = discord.utils.get(guild.roles, name="🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜package") or r_everyone
     r_booster = discord.utils.get(guild.roles, name="💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿") or r_everyone
     r_partner = discord.utils.get(guild.roles, name="🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿") or r_everyone
     r_support = discord.utils.get(guild.roles, name="🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁") or r_everyone
@@ -1110,7 +1092,7 @@ async def start(ctx):
             ]
         },
         {
-            "name": "🛒│── 𝗩𝗢𝗜𝗗 • 𝗦𝗛𝗢𝗣 ──",
+            "name": "🛒│── 𝗩𝗢𝗜𝗗 • 𝗦𝗛𝗢package ──",
             "overwrites": info_overwrites,
             "channels": [
                 {"name": "👕│tshirt-templates", "type": "text", "description": "Exklusive T-Shirt Vorlagen für Roblox"},
@@ -1568,8 +1550,7 @@ async def on_member_join(member):
     """Loggt Serverbeitritte, sendet Willkommens-Embeds & Invite-Tracking."""
     guild = member.guild
     
-    # ✉️ WILLKOMMENS EMBED IN #willkommen
-    welcome_channel = discord.utils.get(guild.text_channels, name="📢│news") # Nutzt news oder einen dedizierten, falls vorhanden
+    welcome_channel = discord.utils.get(guild.text_channels, name="👋│willkommen")
     if welcome_channel:
         embed_welcome_msg = create_prestige_embed(
             title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n👋 HERZLICH WILLKOMMEN BEI 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 👋\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
@@ -1578,7 +1559,7 @@ async def on_member_join(member):
                         f"**Deine ersten Schritte:**\n"
                         f"> 🔐 │ Verifiziere dich live mit dem Befehl: `!verify <Username>`\n"
                         f"> 🛒 │ Schalte exklusive Rollen frei mit dem Befehl: `!checkbuy <Username> <Gamepass_ID>`\n"
-                        f"> 🎟️ │ Für Fragen oder Käufe, öffne einfach ein Ticket in <#1234> (oder im Ticketkanal).\n\n"
+                        f"> 🎟️ │ Für Fragen oder Käufe, öffne einfach ein Ticket in {c_ticket_mention}.\n\n"
                         f"📌 │ Du bist unser **{len(guild.members)}.** wertvolles Mitglied!",
             color=0x00f0ff,
             author_user=member,
@@ -1587,7 +1568,6 @@ async def on_member_join(member):
         embed_welcome_msg.set_thumbnail(url=member.display_avatar.url)
         await welcome_channel.send(embed=embed_welcome_msg)
 
-    # Standard-Logs befüllen
     log_channel = discord.utils.get(guild.text_channels, name="📥│join-leave-logs")
     invite_log_channel = discord.utils.get(guild.text_channels, name="📩│invite-logs")
     
@@ -1634,6 +1614,20 @@ async def on_member_join(member):
 async def on_member_remove(member):
     """Loggt Austritte, Abschieds-Embeds & Kicks."""
     guild = member.guild
+    
+    goodbye_channel = discord.utils.get(guild.text_channels, name="💨│aufwiedersehen")
+    if goodbye_channel:
+        embed_goodbye_msg = create_prestige_embed(
+            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n💨 AUF WIEDERSEHEN...\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
+            description=f"> {member.name} ({member.id}) hat den Server verlassen.\n"
+                        f"> Wir wünschen dir alles Gute auf deinem weiteren Weg!",
+            color=0xff003c,
+            author_user=member,
+            bot_user=bot.user
+        )
+        embed_goodbye_msg.set_thumbnail(url=member.display_avatar.url)
+        await goodbye_channel.send(embed=embed_goodbye_msg)
+
     kicked_by = None
     reason = "Kein Grund angegeben"
 
