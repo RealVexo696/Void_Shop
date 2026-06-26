@@ -362,6 +362,7 @@ async def create_roles_command(ctx):
     """
     Erstellt alle 22 Premium-Rollen, prüft ob sie bereits existieren,
     und setzt im Anschluss alle Kanalrechte für diese Rollen.
+    Inklusive absolutem Fallback-Schutz.
     """
     progress_embed = create_prestige_embed(
         title="👑 Rollen- & Berechtigungs-Setup",
@@ -373,7 +374,6 @@ async def create_roles_command(ctx):
     status_msg = await ctx.send(embed=progress_embed)
 
     guild = ctx.guild
-    bot_member = guild.me
 
     role_colors = {
         # --- STAFF ROLES ---
@@ -398,11 +398,11 @@ async def create_roles_command(ctx):
         # --- REWARD ROLES (BUYER LEVELS) ---
         "🥉│ 𝗕𝗿𝗼𝗻𝘇𝗲 𝗕𝘂𝘆𝗲𝗿": (0xcd7f32, False),       # Bronze
         "🥈│ 𝗦𝗶𝗹𝘃𝗲𝗿 𝗕𝘂𝘆𝗲𝗿": (0xc0c0c0, False),       # Silver
-        "🥇│ 𝗚𝗼𝗹𝗱 𝗕𝘂𝘆𝗲ำ": (0xffd700, False),         # Gold
+        "🥇│ 𝗚𝗼𝗹𝗱 𝗕𝘂𝘆𝗲𝗿": (0xffd700, False),         # Gold
         "💎│ 𝗗𝗶𝗮𝗺𝗼𝗻𝗱 𝗕𝘂𝘆𝗲𝗿": (0xb9f2ff, False),       # Diamond
         
         # --- NOTIFICATION ROLES ---
-        "📢│ 𝗔𝗻𝗻𝗼𝘂𝗻𝗰𝗲𝗺𝗲𝗻 t 𝗣𝗶𝗻𝗴": (0x7289da, False),  # Discord Blue
+        "📢│ 𝗔𝗻𝗻𝗼𝘂𝗻𝗰𝗲𝗺𝗲𝗻𝘁 𝗣𝗶𝗻𝗴": (0x7289da, False),  # Discord Blue
         "🎁│ 𝗚𝗶𝘃𝗲𝗮𝘄𝗮𝘆 𝗣𝗶𝗻𝗴": (0xff4500, False),      # Red-Orange
         "📦│ 𝗣𝗿𝗼𝗱𝘂𝗰𝘁 𝗣𝗶𝗻𝗴": (0x32cd32, False),       # Lime Green
         
@@ -414,6 +414,7 @@ async def create_roles_command(ctx):
     created_roles = {}
     roles_created_count = 0
     roles_skipped_count = 0
+    roles_failed_count = 0
 
     for role_name, (color_hex, is_admin) in role_colors.items():
         existing_role = discord.utils.get(guild.roles, name=role_name)
@@ -450,30 +451,53 @@ async def create_roles_command(ctx):
             )
             created_roles[role_name] = new_role
             roles_created_count += 1
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.15)
         except discord.Forbidden:
-            logger.error(f"Fehler: Keine Berechtigung zum Erstellen der Rolle {role_name}.")
-            embed_warning = create_prestige_embed(
-                title="⚠️ Berechtigungs-Konflikt",
-                description=f"> Ich habe nicht genügend Rechte, um die Rolle **{role_name}** zu erstellen!\n\n"
-                            f"**Behebung:**\n"
-                            f"1. Gehe in Server-Einstellungen ➔ Rollen.\n"
-                            f"2. Ziehe meine Rolle (`𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣`) ganz nach oben.\n"
-                            f"3. Aktiviere für mich **'Rollen verwalten'**.\n"
-                            f"4. Nutze `!role` erneut.",
-                color=0xff003c,
-                author_user=ctx.author,
-                bot_user=bot.user
-            )
-            await status_msg.edit(embed=embed_warning)
-            return
+            # ERSTER FALLBACK: Erstelle die Rolle ohne spezielle Permissions (Falls dem Bot Rechte fehlen)
+            try:
+                new_role = await guild.create_role(
+                    name=role_name,
+                    color=discord.Color(color_hex),
+                    permissions=discord.Permissions.default(),
+                    hoist=True,
+                    mentionable=True
+                )
+                created_roles[role_name] = new_role
+                roles_created_count += 1
+                await asyncio.sleep(0.15)
+            except discord.Forbidden:
+                roles_failed_count += 1
+                logger.error(f"Konnte Rolle {role_name} überhaupt nicht erstellen (Fehlende Rechte).")
+        except Exception as e:
+            roles_failed_count += 1
+            logger.error(f"Fehler bei {role_name}: {e}")
 
-    # Extrahierte Rollenobjekte für Rechteverteilung
+    # Falls gar keine Rolle erstellt wurde und Fehler vorlagen, fehlt definitiv die Berechtigung
+    if roles_failed_count > 0 and roles_created_count == 0 and roles_skipped_count == 0:
+        embed_warning = create_prestige_embed(
+            title="⚠️ FEHLER: Keine Rollen erstellt!",
+            description=f"> Es konnte **keine einzige Rolle** erstellt werden!\n\n"
+                        f"**Ursache:**\n"
+                        f"Dem Bot fehlt im Server die Berechtigung **'Rollen verwalten'** (Manage Roles) oder die Administrator-Rechte.\n\n"
+                        f"**So behebst du diesen Fehler:**\n"
+                        f"1. Gehe in deine **Server-Einstellungen** ➔ **Rollen**.\n"
+                        f"2. Klicke auf die Rolle deines Bots (`𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣`).\n"
+                        f"3. Aktiviere die Berechtigung **'Rollen verwalten'** (oder gib ihm direkt **'Administrator'**).\n"
+                        f"4. Stelle sicher, dass die Rolle des Bots in der Liste ganz oben steht.\n"
+                        f"5. Führe den Befehl `!role` erneut aus.",
+            color=0xff003c,
+            author_user=ctx.author,
+            bot_user=bot.user
+        )
+        await status_msg.edit(embed=embed_warning)
+        return
+
+    # Extrahierte Rollenobjekte für Rechteverteilung (Sicherer Fallback falls Erstellung fehlschlug)
     r_everyone = guild.default_role
     r_member = created_roles.get("👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿") or r_everyone
     r_customer = created_roles.get("🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿") or r_everyone
     r_premium_buyer = created_roles.get("💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿") or r_everyone
-    r_vip = created_roles.get("🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣") or r_everyone
+    r_vip = created_roles.get("🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜package") or r_everyone
     r_booster = created_roles.get("💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿") or r_everyone
     r_partner = created_roles.get("🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿") or r_everyone
     r_support = created_roles.get("🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁") or r_everyone
@@ -485,8 +509,8 @@ async def create_roles_command(ctx):
     r_owner = created_roles.get("👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿") or r_everyone
 
     # 3. SCHRITT: Rechteverteilung für Kanäle aktualisieren
-    status_embed.description = f"> 👑 Rollen geprüft: **{roles_created_count} erstellt**, **{roles_skipped_count} übersprungen**.\n> 🔒 Setze jetzt Berechtigungen für alle Kanäle..."
-    await status_msg.edit(embed=status_embed)
+    progress_embed.description = f"> 👑 Rollen geprüft: **{roles_created_count} erstellt**, **{roles_skipped_count} übersprungen**.\n> 🔒 Setze jetzt Berechtigungen für alle Kanäle..."
+    await status_msg.edit(embed=progress_embed)
 
     # Berechtigungsdefinitionen
     info_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, send_messages=False, add_reactions=True, read_message_history=True)}
@@ -510,7 +534,6 @@ async def create_roles_command(ctx):
     channels_processed = 0
     for channel in guild.channels:
         try:
-            # Setze Rechte basierend auf dem Kanalnamen/Kategorie
             if channel.category and "LOGS" in channel.category.name.upper():
                 await channel.edit(overwrites=log_overwrites)
             elif channel.category and "STAFF" in channel.category.name.upper():
@@ -636,7 +659,7 @@ async def start(ctx):
     r_member = discord.utils.get(guild.roles, name="👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿") or r_everyone
     r_customer = discord.utils.get(guild.roles, name="🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿") or r_everyone
     r_premium_buyer = discord.utils.get(guild.roles, name="💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿") or r_everyone
-    r_vip = discord.utils.get(guild.roles, name="🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣") or r_everyone
+    r_vip = discord.utils.get(guild.roles, name="🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜package") or r_everyone
     r_booster = discord.utils.get(guild.roles, name="💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿") or r_everyone
     r_partner = discord.utils.get(guild.roles, name="🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿") or r_everyone
     r_support = discord.utils.get(guild.roles, name="🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁") or r_everyone
@@ -752,8 +775,24 @@ async def start(ctx):
     for cat_data in categories_layout:
         category = discord.utils.get(guild.categories, name=cat_data["name"])
         if not category:
-            category = await guild.create_category(name=cat_data["name"], overwrites=cat_data["overwrites"])
-            await asyncio.sleep(0.3)
+            try:
+                category = await guild.create_category(name=cat_data["name"], overwrites=cat_data["overwrites"])
+                await asyncio.sleep(0.2)
+            except discord.Forbidden:
+                embed_err = create_prestige_embed(
+                    title="⚠️ FEHLER: Keine Kanäle erstellt!",
+                    description=f"> Ich habe keine Berechtigung, Kategorien oder Kanäle zu erstellen!\n\n"
+                                f"**Behebung:**\n"
+                                f"Bitte stelle sicher, dass mein Bot die Berechtigung **'Kanäle verwalten'** (Manage Channels) oder **'Administrator'** besitzt und führe `!Start` erneut aus.",
+                    color=0xff003c,
+                    author_user=ctx.author,
+                    bot_user=bot.user
+                )
+                await status_msg.edit(embed=embed_err)
+                return
+            except Exception as e:
+                logger.error(f"Fehler bei Kategorie {cat_data['name']}: {e}")
+                continue
         
         for ch_data in cat_data["channels"]:
             current_overwrites = cat_data["overwrites"].copy()
@@ -788,13 +827,17 @@ async def start(ctx):
 
             channel = discord.utils.get(category.text_channels, name=ch_data["name"])
             if not channel:
-                channel = await guild.create_text_channel(
-                    name=ch_data["name"],
-                    category=category,
-                    overwrites=current_overwrites,
-                    topic=ch_data["description"]
-                )
-                await asyncio.sleep(0.3)
+                try:
+                    channel = await guild.create_text_channel(
+                        name=ch_data["name"],
+                        category=category,
+                        overwrites=current_overwrites,
+                        topic=ch_data["description"]
+                    )
+                    await asyncio.sleep(0.2)
+                except Exception as e:
+                    logger.error(f"Fehler bei Kanal {ch_data['name']}: {e}")
+                    continue
             channels_by_name[ch_data["name"]] = channel
 
     # 5. SCHRITT: Kanäle befüllen (Embeds)
@@ -965,7 +1008,6 @@ async def on_guild_channel_create(channel):
     """Loggt erstellte Kanäle."""
     log_channel = discord.utils.get(channel.guild.text_channels, name="⚙️│system-logs")
     if log_channel:
-        # Finde Moderator aus Audit Logs
         moderator = None
         async for entry in channel.guild.audit_logs(action=discord.AuditLogAction.channel_create, limit=1):
             if entry.target.id == channel.id:
