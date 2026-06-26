@@ -34,7 +34,7 @@ logger = logging.getLogger('void_shop_bot')
 #                                KONFIGURATION
 # ==============================================================================
 # Trage hier direkt deinen Discord Bot-Token ein!
-TOKEN = "MTUyMDE3MDg0MTQ2NjQ3MDUyMQ.GbIcAF.OBOLoyO8IKC3sbfr1oVuWEMwAw4PphQXy4RCWQ"  
+TOKEN = "MTUyMDE3MDg0MTQ2NjQ3MDUyMQ.GbIcAF.OBOLoyO8IKC3sbfr1oVuWEMwAw4PphQXy4RCWQ" 
 
 # Der Prefix für deine Befehle (Standard ist !)
 PREFIX = "!"
@@ -113,6 +113,30 @@ async def check_roblox_ownership(user_id: int, gamepass_id: int):
     return False
 
 
+# --- REALTIME STATS CHANNELS UPDATE HELPER ---
+
+async def update_stats_channels(guild):
+    """Aktualisiert sofort und in Echtzeit die Namen der Server-Statistik Kanäle."""
+    member_count = len(guild.members)
+    booster_count = guild.premium_subscription_count
+    
+    customer_role = discord.utils.get(guild.roles, name="🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿")
+    customer_count = len(customer_role.members) if customer_role else 0
+
+    for vc in guild.voice_channels:
+        try:
+            if vc.name.startswith("👥│Mitglieder:"):
+                await vc.edit(name=f"👥│Mitglieder: {member_count}")
+            elif vc.name.startswith("💎│Booster:"):
+                await vc.edit(name=f"💎│Booster: {booster_count}")
+            elif vc.name.startswith("🛒│Kunden:"):
+                await vc.edit(name=f"🛒│Kunden: {customer_count}")
+        except discord.Forbidden:
+            logger.warning(f"Keine Berechtigung zum Bearbeiten des Stats-Kanals {vc.name}.")
+        except Exception as e:
+            logger.error(f"Fehler bei Stats-Kanal Edit: {e}")
+
+
 # --- ROBLOX VERIFIZIERUNGS BUTTONS ---
 
 class RobloxVerifyView(discord.ui.View):
@@ -128,14 +152,11 @@ class RobloxVerifyView(discord.ui.View):
         guild = interaction.guild
         member = interaction.user
 
-        # Suche verifizierte Rolle
         verified_role = discord.utils.get(guild.roles, name="👤│ 𝗩𝗢𝗜𝗗 • 𝗩𝗲𝗿𝗶𝗳𝗶𝗲𝗱")
         
         try:
-            # Vergib die Rolle
             if verified_role:
                 await member.add_roles(verified_role)
-            # Benenne den User um (Roblox Username)
             await member.edit(nick=self.roblox_name)
 
             success_embed = create_prestige_embed(
@@ -158,7 +179,9 @@ class RobloxVerifyView(discord.ui.View):
             await interaction.response.send_message(embed=success_embed, ephemeral=True)
             self.stop()
 
-            # Eintrag in die System-Logs
+            # Live Stats aktualisieren
+            await update_stats_channels(guild)
+
             log_channel = discord.utils.get(guild.text_channels, name="⚙️│system-logs")
             if log_channel:
                 log_embed = create_prestige_embed(
@@ -194,10 +217,100 @@ class RobloxVerifyView(discord.ui.View):
         self.stop()
 
 
-# --- TICKET SYSTEM (MIT CLAIM & TRANSCRIPT) ---
+# --- INTERAKTIVES TICKET-SYSTEM MODALS (ADD/REMOVE USER) ---
+
+class AddUserModal(discord.ui.Modal, title="User zum Ticket hinzufügen"):
+    user_input = discord.ui.TextInput(
+        label="User-ID oder Username", 
+        placeholder="z.B. 123456789012345678 oder name", 
+        required=True
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        channel = interaction.channel
+        
+        user_str = self.user_input.value
+        user = None
+        
+        # Suchen per ID
+        if user_str.isdigit():
+            user = guild.get_member(int(user_str))
+            if not user:
+                try:
+                    user = await guild.fetch_member(int(user_str))
+                except Exception:
+                    pass
+        # Suchen per Name
+        if not user:
+            user = discord.utils.get(guild.members, name=user_str)
+            
+        if not user:
+            await interaction.response.send_message(f"❌ User '{user_str}' wurde auf diesem Server nicht gefunden!", ephemeral=True)
+            return
+            
+        try:
+            await channel.set_permissions(user, view_channel=True, send_messages=True, read_message_history=True)
+            embed = create_prestige_embed(
+                title="➕ User hinzugefügt",
+                description=f"> {interaction.user.mention} hat {user.mention} zum Ticket hinzugefügt.",
+                color=0x39ff14,
+                author_user=interaction.user,
+                bot_user=interaction.client.user
+            )
+            await channel.send(embed=embed)
+            await interaction.response.send_message(f"✅ {user.name} wurde erfolgreich hinzugefügt!", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Fehler beim Hinzufügen: {e}", ephemeral=True)
+
+
+class RemoveUserModal(discord.ui.Modal, title="User aus Ticket entfernen"):
+    user_input = discord.ui.TextInput(
+        label="User-ID oder Username", 
+        placeholder="z.B. 123456789012345678", 
+        required=True
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        channel = interaction.channel
+        
+        user_str = self.user_input.value
+        user = None
+        
+        if user_str.isdigit():
+            user = guild.get_member(int(user_str))
+            if not user:
+                try:
+                    user = await guild.fetch_member(int(user_str))
+                except Exception:
+                    pass
+        if not user:
+            user = discord.utils.get(guild.members, name=user_str)
+            
+        if not user:
+            await interaction.response.send_message(f"❌ User '{user_str}' wurde nicht gefunden!", ephemeral=True)
+            return
+            
+        try:
+            await channel.set_permissions(user, overwrite=None)
+            embed = create_prestige_embed(
+                title="➖ User entfernt",
+                description=f"> {interaction.user.mention} hat {user.mention} aus dem Ticket entfernt.",
+                color=0xff003c,
+                author_user=interaction.user,
+                bot_user=interaction.client.user
+            )
+            await channel.send(embed=embed)
+            await interaction.response.send_message(f"✅ {user.name} wurde erfolgreich entfernt!", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Fehler beim Entfernen: {e}", ephemeral=True)
+
+
+# --- PERSISTENTE TICKET-ANSICHTEN (TICKET SYSTEM) ---
 
 class CloseTicketView(discord.ui.View):
-    """View für den Ticket-Schließen & Ticket-Claimen Button im Ticket."""
+    """View für die Ticket-Steuerung im Ticket-Kanal."""
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -250,8 +363,8 @@ class CloseTicketView(discord.ui.View):
             claim_embed = create_prestige_embed(
                 title="🙋‍♂️ Ticket geclaimed!",
                 description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-                            f"> Dieses Ticket wird nun exklusiv von {member.mention} betreut.\n"
-                            f"> Bitte richte alle weiteren Fragen direkt an deinen zuständigen Supporter.",
+                    f"> Dieses Ticket wird nun exklusiv von {member.mention} betreut.\n"
+                    f"> Bitte richte alle weiteren Fragen direkt an deinen zuständigen Supporter.",
                 color=0x00f0ff,
                 author_user=member,
                 bot_user=interaction.client.user
@@ -274,6 +387,24 @@ class CloseTicketView(discord.ui.View):
         except Exception as e:
             logger.error(f"Fehler beim Claimen des Tickets: {e}")
             await interaction.response.send_message("❌ Fehler beim Aktualisieren der Ticketrechte.", ephemeral=True)
+
+    @discord.ui.button(
+        label="User hinzufügen", 
+        style=discord.ButtonStyle.success, 
+        emoji="➕", 
+        custom_id="add_user_ticket_btn"
+    )
+    async def add_user(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(AddUserModal())
+
+    @discord.ui.button(
+        label="User entfernen", 
+        style=discord.ButtonStyle.secondary, 
+        emoji="➖", 
+        custom_id="remove_user_ticket_btn"
+    )
+    async def remove_user(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(RemoveUserModal())
 
     @discord.ui.button(
         label="Ticket schließen", 
@@ -401,7 +532,7 @@ class TicketButton(discord.ui.View):
             )
             return
 
-        owner_role = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲rer")
+        owner_role = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿")
         co_owner_role = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿")
         admin_role = discord.utils.get(guild.roles, name="🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻")
         manager_role = discord.utils.get(guild.roles, name="⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿")
@@ -512,6 +643,55 @@ class TicketButton(discord.ui.View):
             )
 
 
+# --- PERSISTENTER VERIFIZIERUNGS BUTTON (EINTRETEN VERIFIZIERUNG) ---
+
+class SimpleVerifyButton(discord.ui.View):
+    """View für die 1-Klick-Verifizierung im Server."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Verifizieren 🔐", 
+        style=discord.ButtonStyle.success, 
+        emoji="🔐", 
+        custom_id="simple_verify_btn"
+    )
+    async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        member = interaction.user
+        
+        member_role = discord.utils.get(guild.roles, name="👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿")
+        if not member_role:
+            await interaction.response.send_message("❌ Fehler: Die Mitgliederrolle wurde nicht gefunden!", ephemeral=True)
+            return
+
+        if member_role in member.roles:
+            await interaction.response.send_message("ℹ️ Du bist bereits verifiziert!", ephemeral=True)
+            return
+
+        try:
+            await member.add_roles(member_role)
+            await interaction.response.send_message("✅ Du hast dich erfolgreich verifiziert und die Mitglieder-Rolle erhalten!", ephemeral=True)
+            
+            log_channel = discord.utils.get(guild.text_channels, name="⚙️│system-logs")
+            if log_channel:
+                embed = create_prestige_embed(
+                    title="🔐 Mitglied verifiziert (1-Klick)",
+                    description=f"> **User:** {member.mention} ({member.name})\n"
+                                f"> Hat die Verifizierung per Knopfdruck abgeschlossen.",
+                    color=0x39ff14,
+                    author_user=member,
+                    bot_user=interaction.client.user
+                )
+                await log_channel.send(embed=embed)
+                
+            # Echtzeit Stats-Update
+            await update_stats_channels(guild)
+
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ Fehler: Mir fehlen die Rechte, um dir die Rolle zu geben. Bitte wende dich an einen Admin!", ephemeral=True)
+
+
 # --- BOT KLASSE ---
 
 class VoidShopBot(commands.Bot):
@@ -527,6 +707,7 @@ class VoidShopBot(commands.Bot):
     async def setup_hook(self):
         self.add_view(TicketButton())
         self.add_view(CloseTicketView())
+        self.add_view(SimpleVerifyButton())
         
         # Starte den Stats-Update-Loop (hier läuft die Event-Loop garantiert!)
         if not update_stats_task.is_running():
@@ -545,6 +726,8 @@ class VoidShopBot(commands.Bot):
         for guild in self.guilds:
             try:
                 self.invites_cache[guild.id] = await guild.invites()
+                # Aktualisiere Statistiken beim Botstart sofort
+                await update_stats_channels(guild)
             except Exception:
                 pass
 
@@ -561,28 +744,10 @@ bot = VoidShopBot()
 
 @tasks.loop(minutes=10)
 async def update_stats_task():
-    """Aktualisiert alle 10 Minuten die Namen der Server-Statistik Kanäle."""
-    logger.info("Starte Aktualisierung der Server-Statistiken...")
+    """Backup-Loop: Aktualisiert alle 10 Minuten die Namen der Server-Statistik Kanäle."""
+    logger.info("Führe Backup-Aktualisierung der Server-Statistiken durch...")
     for guild in bot.guilds:
-        member_count = len(guild.members)
-        booster_count = guild.premium_subscription_count
-        
-        customer_role = discord.utils.get(guild.roles, name="🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿")
-        customer_count = len(customer_role.members) if customer_role else 0
-
-        # Iteriere durch die Sprachkanäle und aktualisiere
-        for vc in guild.voice_channels:
-            try:
-                if vc.name.startswith("👥│Mitglieder:"):
-                    await vc.edit(name=f"👥│Mitglieder: {member_count}")
-                elif vc.name.startswith("💎│Booster:"):
-                    await vc.edit(name=f"💎│Booster: {booster_count}")
-                elif vc.name.startswith("🛒│Kunden:"):
-                    await vc.edit(name=f"🛒│Kunden: {customer_count}")
-            except discord.Forbidden:
-                logger.warning(f"Keine Berechtigung, den Stats-Kanal {vc.name} zu bearbeiten.")
-            except Exception as e:
-                logger.error(f"Fehler beim Editieren des Stats-Kanals: {e}")
+        await update_stats_channels(guild)
 
 
 # --- VERIFY & CHECKBUY COMMANDS (REAL ROBLOX API INTEGRATION) ---
@@ -728,6 +893,9 @@ async def checkbuy_command(ctx, roblox_username: str = None, gamepass_id: int = 
             
             await status_msg.edit(embed=success_embed)
 
+            # Echtzeit Stats-Update
+            await update_stats_channels(guild)
+
             log_channel = discord.utils.get(guild.text_channels, name="⚙️│system-logs")
             if log_channel:
                 log_embed = create_prestige_embed(
@@ -740,7 +908,7 @@ async def checkbuy_command(ctx, roblox_username: str = None, gamepass_id: int = 
                     author_user=member,
                     bot_user=bot.user
                 )
-                await log_channel.send(embed=log_embed)
+                await log_channel.send(log_embed)
 
         except discord.Forbidden:
             await status_msg.edit(content="❌ Fehler: Dem Bot fehlen die Rechte zum Vergeben der Rollen. Stelle sicher, dass die Bot-Rolle ganz oben steht!")
@@ -911,7 +1079,7 @@ async def create_roles_command(ctx):
     r_member = created_roles.get("👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿") or r_everyone
     r_customer = created_roles.get("🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿") or r_everyone
     r_premium_buyer = created_roles.get("💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿") or r_everyone
-    r_vip = created_roles.get("🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜package") or r_everyone
+    r_vip = created_roles.get("🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣") or r_everyone
     r_booster = created_roles.get("💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿") or r_everyone
     r_partner = created_roles.get("🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿") or r_everyone
     r_support = created_roles.get("🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁") or r_everyone
@@ -950,7 +1118,7 @@ async def create_roles_command(ctx):
                 await channel.edit(overwrites=log_overwrites)
             elif channel.category and "STAFF" in channel.category.name.upper():
                 await channel.edit(overwrites=staff_overwrites)
-            elif channel.category and ("INFO" in channel.category.name.upper() or "SHOP" in channel.category.name.upper() or "SUPPORT" in channel.category.name.upper()):
+            elif channel.category and ("INFO" in channel.category.name.upper() or "SHOP" in channel.category.name.upper() or "SUPPORT" in channel.category.name.upper() or "VERIFY" in channel.category.name.upper()):
                 await channel.edit(overwrites=info_overwrites)
             channels_processed += 1
             await asyncio.sleep(0.1)
@@ -970,7 +1138,7 @@ async def create_roles_command(ctx):
     await status_msg.edit(embed=success_embed)
 
 
-# --- CONFIRMATION VIEW FÜR SERVER SETUP ---
+# --- SETUP CONFIRMATION VIEW & COMMAND (!Start) ---
 
 class SetupConfirmationView(discord.ui.View):
     def __init__(self, ctx):
@@ -1006,8 +1174,6 @@ class SetupConfirmationView(discord.ui.View):
         self.stop()
 
 
-# --- START COMMAND ---
-
 @bot.command(name="Start", aliases=["start"])
 @commands.guild_only()
 @commands.has_permissions(administrator=True)
@@ -1020,8 +1186,8 @@ async def start(ctx):
         title="⚠️ 𝗩𝗢𝗜𝗗 • SERVER SETUP INITIALISIERUNG ⚠️",
         description=f"Hallo {ctx.author.mention},\n\ndu bist dabei, das **Prestige Server-Layout** für **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣** aufzubauen.\n"
                     f"Dieses Setup generiert:\n"
-                    f"> 📁 │ **6 Hauptkategorien, 1 Log-Kategorie & 1 Stats-Kategorie**\n"
-                    f"> 💬 │ **26 Textkanäle, 7 Voicekanäle & 7 professionelle Log-Kanäle (Gesamt: 40 Kanäle)**\n"
+                    f"> 📁 │ **7 Hauptkategorien, 1 Log-Kategorie & 1 Stats-Kategorie**\n"
+                    f"> 💬 │ **27 Textkanäle, 7 Voicekanäle & 7 professionelle Log-Kanäle (Gesamt: 41 Kanäle)**\n"
                     f"> ⚙️ │ **Vollständiges Embed-Design in allen Infokanälen**\n\n"
                     f"Bitte wähle eine Option aus:\n\n"
                     f"🧹 **Komplett neu aufsetzen:** Löscht alle Kanäle (außer den aktuellen) und baut neu auf.\n"
@@ -1105,7 +1271,7 @@ async def start(ctx):
     for r in [r_manager, r_admin, r_co_owner, r_owner]:
         if r != r_everyone: log_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-    status_embed.description = "> 📁 Erstelle Server-Struktur & 40 Kanäle..."
+    status_embed.description = "> 📁 Erstelle Server-Struktur & 41 Kanäle..."
     await status_msg.edit(embed=status_embed)
 
     categories_layout = [
@@ -1116,6 +1282,13 @@ async def start(ctx):
                 {"name": "👥│Mitglieder: 0", "type": "voice", "description": ""},
                 {"name": "💎│Booster: 0", "type": "voice", "description": ""},
                 {"name": "🛒│Kunden: 0", "type": "voice", "description": ""}
+            ]
+        },
+        {
+            "name": "🔐│── 𝗩𝗢𝗜𝗗 • 𝗩𝗘𝗥𝗜𝗙𝗬 ──",
+            "overwrites": info_overwrites,
+            "channels": [
+                {"name": "🔐│verify-here", "type": "text", "description": "Klicke unten auf den Button, um dich freizuschalten!"}
             ]
         },
         {
@@ -1133,7 +1306,7 @@ async def start(ctx):
             ]
         },
         {
-            "name": "🛒│── 𝗩𝗢𝗜𝗗 • 𝗦𝗛𝗢package ──",
+            "name": "🛒│── 𝗩𝗢𝗜𝗗 • 𝗦𝗛𝗢𝗣 ──",
             "overwrites": info_overwrites,
             "channels": [
                 {"name": "👕│tshirt-templates", "type": "text", "description": "Exklusive T-Shirt Vorlagen für Roblox"},
@@ -1413,11 +1586,47 @@ async def start(ctx):
         )
         await c_inv.send(embed=embed_inv)
 
+    # G) VERIFY HERE PANEL IN #verify-here
+    c_v_here = channels_by_name.get("🔐│verify-here")
+    if c_v_here:
+        embed_v_here = create_prestige_embed(
+            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n🔐 𝗩𝗢𝗜𝗗 • SERVEREINTRETEN VERIFIZIERUNG\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
+            description="Herzlich Willkommen bei **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣**!\n\n"
+                        "Um vollen Zugriff auf den Server (Chats, Produkte, Giveaways) zu erhalten, musst du dich verifizieren.\n\n"
+                        "**So einfach geht's:**\n"
+                        "> 1️⃣ │ Klicke unten auf den grünen Button **'Verifizieren 🔐'**.\n"
+                        "> 2️⃣ │ Du erhältst sofort die **Member-Rolle** und wirst freigeschaltet.\n\n"
+                        "*Hinweis: Für erweiterte Käufe kannst du zusätzlich die Roblox-Verifizierung nutzen!*",
+            color=0x39ff14,
+            author_user=ctx.author,
+            bot_user=bot.user
+        )
+        await c_v_here.send(embed=embed_v_here, view=SimpleVerifyButton())
+
+    # H) FIRST VOUCH PREPARATION IN #vouches
+    c_vouches = channels_by_name.get("🤝│vouches")
+    if c_vouches:
+        embed_vouch_placeholder = create_prestige_embed(
+            title="🤝 𝗩𝗢𝗜𝗗 • 𝗞𝗨𝗡𝗗𝗘𝗡-𝗕𝗘𝗪𝗘𝗥𝗧𝗨𝗡𝗚𝗘𝗡 🤝",
+            description="Kundenzufriedenheit steht bei uns an oberster Stelle!\n\n"
+                        "Wenn du bei uns eingekauft hast, würden wir uns sehr über eine Bewertung freuen. "
+                        "Das hilft uns und stärkt das Vertrauen neuer Kunden.\n\n"
+                        "**Beispiel für eine Bewertung:**\n"
+                        "⭐ ⭐ ⭐ ⭐ ⭐ - *Sehr schneller Support, FastFlags funktionieren perfekt und habe direkt +120 FPS bekommen! Gerne wieder!*",
+            color=0xffd700,
+            author_user=ctx.author,
+            bot_user=bot.user
+        )
+        await c_vouches.send(embed=embed_vouch_placeholder)
+
+    # Statistiken sofort updaten
+    await update_stats_channels(guild)
+
     status_embed.title = "🎉 Server-Setup erfolgreich abgeschlossen! 🎉"
     status_embed.description = (
-        f"> 📁 **Kategorien & Kanäle:** 40 Kanäle erfolgreich eingerichtet.\n"
+        f"> 📁 **Kategorien & Kanäle:** 41 Kanäle erfolgreich eingerichtet.\n"
         f"> 🔒 **Rechte:** Hochsicheres, fehlerfreies Rechtesystem aktiv.\n"
-        f"> 🎟️ **Tickets:** Interaktive Multi-Tickets sind einsatzbereit!\n\n"
+        f"> 🎟️ **Tickets:** Interaktive Multi-Tickets mit Claim-Funktion sind einsatzbereit!\n\n"
         f"Nutze `/start` oder lösche diese Nachricht, falls gewünscht."
     )
     status_embed.color = 0x39ff14
@@ -1591,24 +1800,34 @@ async def on_member_join(member):
     """Loggt Serverbeitritte, sendet Willkommens-Embeds & Invite-Tracking."""
     guild = member.guild
     
+    # ✉️ NETTE BEGRÜSSUNG IM WILLKOMMENS-KANAL (DIZZY JOIN)
     welcome_channel = discord.utils.get(guild.text_channels, name="👋│willkommen")
     if welcome_channel:
         embed_welcome_msg = create_prestige_embed(
             title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n👋 HERZLICH WILLKOMMEN BEI 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 👋\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
-            description=f"Hallo {member.mention}!\n"
+            description=f"Hallo **{member.name}**! Schön, dass du da bist!\n"
                         f"Wir freuen uns ungemein, dich auf unserem prestigeträchtigen Server begrüßen zu dürfen.\n\n"
                         f"**Deine ersten Schritte:**\n"
-                        f"> 🔐 │ Verifiziere dich live mit dem Befehl: `!verify <Username>`\n"
-                        f"> 🛒 │ Schalte exklusive Rollen frei mit dem Befehl: `!checkbuy <Username> <Gamepass_ID>`\n"
-                        f"> 🎟️ │ Für Fragen oder Käufe, öffne einfach ein Ticket in {c_ticket_mention}.\n\n"
-                        f"📌 │ Du bist unser **{len(guild.members)}.** wertvolles Mitglied!",
+                        f"> 🔐 │ Schalte dich sofort frei im Kanal <#verify_channel_id_here> (oder `#verify-here`).\n"
+                        f"> 👤 │ Roblox-Verifizierung nutzen: `!verify <Username>`\n"
+                        f"> 🛒 │ Schalte exklusive Rollen frei mit: `!checkbuy <Username> <Gamepass_ID>`\n\n"
+                        f"📌 │ Du bist unser **{len(guild.members)}.** wertvolles Mitglied!\n"
+                        f"Genieße deinen Aufenthalt und hab eine tolle Zeit bei uns! ✨",
             color=0x00f0ff,
             author_user=member,
             bot_user=bot.user
         )
         embed_welcome_msg.set_thumbnail(url=member.display_avatar.url)
-        await welcome_channel.send(embed=embed_welcome_msg)
+        # Suche den echten Kanal
+        v_channel = discord.utils.get(guild.text_channels, name="🔐│verify-here")
+        if v_channel:
+            embed_welcome_msg.description = embed_welcome_msg.description.replace("<#verify_channel_id_here>", v_channel.mention)
+        await welcome_channel.send(content=f"Hallo {member.mention}, schön dass du da bist! 👋", embed=embed_welcome_msg)
 
+    # Echtzeit Stats-Update bei Join
+    await update_stats_channels(guild)
+
+    # Standard-Logs befüllen
     log_channel = discord.utils.get(guild.text_channels, name="📥│join-leave-logs")
     invite_log_channel = discord.utils.get(guild.text_channels, name="📩│invite-logs")
     
@@ -1660,14 +1879,17 @@ async def on_member_remove(member):
     if goodbye_channel:
         embed_goodbye_msg = create_prestige_embed(
             title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n💨 AUF WIEDERSEHEN...\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
-            description=f"> {member.name} ({member.id}) hat den Server verlassen.\n"
-                        f"> Wir wünschen dir alles Gute auf deinem weiteren Weg!",
+            description=f"> **{member.name}** hat uns verlassen.\n"
+                        f"> Wir wünschen dir alles Gute auf deinem weiteren Weg! 💨",
             color=0xff003c,
             author_user=member,
             bot_user=bot.user
         )
         embed_goodbye_msg.set_thumbnail(url=member.display_avatar.url)
         await goodbye_channel.send(embed=embed_goodbye_msg)
+
+    # Echtzeit Stats-Update bei Leave
+    await update_stats_channels(guild)
 
     kicked_by = None
     reason = "Kein Grund angegeben"
@@ -1738,8 +1960,13 @@ async def on_member_ban(guild, user):
 
 @bot.event
 async def on_member_update(before, after):
-    """Loggt Timeouts (Stummschaltungen)."""
+    """Loggt Timeouts, Rollen-Updates und aktualisiert Stats-Kanäle in Echtzeit."""
     guild = after.guild
+    
+    # 📊 ECHTZEIT STATS UPDATE BEI ROLLENÄNDERUNG ODER SUBSCRIPTION
+    if before.roles != after.roles or before.premium_since != after.premium_since:
+        await update_stats_channels(guild)
+
     if before.timed_out_until != after.timed_out_until:
         log_channel = discord.utils.get(guild.text_channels, name="🔨│ban-kick-logs")
         if log_channel:
@@ -1807,6 +2034,10 @@ if __name__ == "__main__":
         # Flask Webserver für 24/7 online halten auf Railway starten
         keep_alive()
         
+        # Starte den Stats-Update-Loop
+        if not update_stats_task.is_running():
+            update_stats_task.start()
+            
         try:
             bot.run(TOKEN)
         except discord.errors.LoginFailure:
