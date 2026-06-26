@@ -970,6 +970,42 @@ async def create_roles_command(ctx):
     await status_msg.edit(embed=success_embed)
 
 
+# --- CONFIRMATION VIEW FÜR SERVER SETUP ---
+
+class SetupConfirmationView(discord.ui.View):
+    def __init__(self, ctx):
+        super().__init__(timeout=60)
+        self.ctx = ctx
+        self.value = None
+
+    @discord.ui.button(label="🧹 Komplett neu aufsetzen", style=discord.ButtonStyle.danger, emoji="🧹")
+    async def reset_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Das kannst du nicht entscheiden!", ephemeral=True)
+            return
+        await interaction.response.defer()
+        self.value = "reset"
+        self.stop()
+
+    @discord.ui.button(label="➕ Nur hinzufügen", style=discord.ButtonStyle.success, emoji="➕")
+    async def add_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Das kannst du nicht entscheiden!", ephemeral=True)
+            return
+        await interaction.response.defer()
+        self.value = "add"
+        self.stop()
+
+    @discord.ui.button(label="❌ Abbrechen", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def cancel_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Das kannst du nicht entscheiden!", ephemeral=True)
+            return
+        await interaction.response.defer()
+        self.value = "cancel"
+        self.stop()
+
+
 # --- START COMMAND ---
 
 @bot.command(name="Start", aliases=["start"])
