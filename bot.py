@@ -527,7 +527,12 @@ class VoidShopBot(commands.Bot):
     async def setup_hook(self):
         self.add_view(TicketButton())
         self.add_view(CloseTicketView())
-        logger.info("Persistente UI-Views geladen.")
+        
+        # Starte den Stats-Update-Loop (hier läuft die Event-Loop garantiert!)
+        if not update_stats_task.is_running():
+            update_stats_task.start()
+            
+        logger.info("Persistente UI-Views und Stats-Loop geladen.")
 
     async def on_ready(self):
         activity = discord.Activity(
@@ -1766,10 +1771,6 @@ if __name__ == "__main__":
         # Flask Webserver für 24/7 online halten auf Railway starten
         keep_alive()
         
-        # Starte den Stats-Update-Loop
-        if not update_stats_task.is_running():
-            update_stats_task.start()
-            
         try:
             bot.run(TOKEN)
         except discord.errors.LoginFailure:
