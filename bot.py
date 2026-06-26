@@ -3,9 +3,10 @@ import asyncio
 import logging
 import io
 import threading
+import aiohttp
 import discord
-from discord.ext import commands
-from discord.ui import Button, View
+from discord.ext import commands, tasks
+from discord.ui import Button, View, Modal, TextInput
 from flask import Flask
 
 # --- FLASK SERVER (FÜR 24/7 RAILWAY WEB SERVICE ALIVE) ---
@@ -16,7 +17,6 @@ def home():
     return "<h1>𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 Bot ist Online!</h1><p>Running 24/7 on Railway.</p>"
 
 def run_flask():
-    # Railway bindet an die Umgebungsvariable PORT
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -68,12 +68,223 @@ def create_prestige_embed(title: str, description: str, color: int, author_user:
     return embed
 
 
-# --- PERSISTENTE UI-ELEMENTE ---
+# --- ROBLOX API HELPERS ---
+
+async def get_roblox_user(username: str):
+    """Sucht einen Roblox-User und gibt ID, Display-Name und System-Name zurück."""
+    url = f"https://users.roblox.com/v1/users/search?keyword={username}&limit=1"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    if data.get("data"):
+                        user_data = data["data"][0]
+                        return user_data["id"], user_data["displayName"], user_data["name"]
+        except Exception as e:
+            logger.error(f"Roblox User API Fehler: {e}")
+    return None, None, None
+
+async def get_roblox_avatar(user_id: int):
+    """Sucht den Kopfschuss-Avatar eines Roblox-Users."""
+    url = f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=150x150&format=Png&isCircular=false"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    if data.get("data"):
+                        return data["data"][0]["imageUrl"]
+        except Exception as e:
+            logger.error(f"Roblox Avatar API Fehler: {e}")
+    return None
+
+async def check_roblox_ownership(user_id: int, gamepass_id: int):
+    """Prüft live über die Roblox API, ob ein User einen bestimmten Gamepass besitzt."""
+    url = f"https://inventory.roblox.com/v1/users/{user_id}/items/GamePass/{gamepass_id}/is-owned"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url) as r:
+                if r.status == 200:
+                    text = await r.text()
+                    return text.strip().lower() == "true"
+        except Exception as e:
+            logger.error(f"Roblox Ownership API Fehler: {e}")
+    return False
+
+
+# --- ROBLOX VERIFIZIERUNGS BUTTONS ---
+
+class RobloxVerifyView(discord.ui.View):
+    """Zwei-Knopf-Abfrage zur Bestätigung des Roblox Accounts."""
+    def __init__(self, roblox_id, roblox_name, roblox_display):
+        super().__init__(timeout=60)
+        self.roblox_id = roblox_id
+        self.roblox_name = roblox_name
+        self.roblox_display = roblox_display
+
+    @discord.ui.button(label="Ja, das bin ich ✅", style=discord.ButtonStyle.success, custom_id="verify_yes")
+    async def confirm_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        member = interaction.user
+
+        # Suche verifizierte Rolle
+        verified_role = discord.utils.get(guild.roles, name="👤│ 𝗩𝗢𝗜𝗗 • 𝗩𝗲𝗿𝗶𝗳𝗶𝗲𝗱")
+        
+        try:
+            # Vergib die Rolle
+            if verified_role:
+                await member.add_roles(verified_role)
+            # Benenne den User um (Roblox Username)
+            await member.edit(nick=self.roblox_name)
+
+            success_embed = create_prestige_embed(
+                title="⚡ Roblox-Verifizierung erfolgreich!",
+                description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                            f"> 🎉 Herzlichen Glückwunsch, {member.mention}!\n\n"
+                            f"Du hast dich erfolgreich als **{self.roblox_name}** verifiziert.\n"
+                            f"> **Roblox-ID:** `{self.roblox_id}`\n"
+                            f"> **Display-Name:** `{self.roblox_display}`\n\n"
+                            f"Deine Serverrolle wurde aktualisiert und dein Nickname angepasst.",
+                color=0x39ff14,
+                author_user=member,
+                bot_user=interaction.client.user
+            )
+            
+            avatar_url = await get_roblox_avatar(self.roblox_id)
+            if avatar_url:
+                success_embed.set_thumbnail(url=avatar_url)
+
+            await interaction.response.send_message(embed=success_embed, ephemeral=True)
+            self.stop()
+
+            # Eintrag in die System-Logs
+            log_channel = discord.utils.get(guild.text_channels, name="⚙️│system-logs")
+            if log_channel:
+                log_embed = create_prestige_embed(
+                    title="👤 Mitglied verifiziert",
+                    description=f"> **User:** {member.mention} ({member.name})\n"
+                                f"> **Roblox:** [{self.roblox_name}](https://www.roblox.com/users/{self.roblox_id}/profile)\n"
+                                f"> **Roblox-ID:** `{self.roblox_id}`",
+                    color=0x39ff14,
+                    author_user=member,
+                    bot_user=interaction.client.user
+                )
+                await log_channel.send(embed=log_embed)
+
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ Fehler: Mir fehlen die Rechte, um deine Rolle zu vergeben oder deinen Nickname zu ändern. Stelle sicher, dass meine Rolle in den Server-Einstellungen ganz oben steht!",
+                ephemeral=True
+            )
+        except Exception as e:
+            logger.error(f"Fehler bei Verifizierungs-Abschluss: {e}")
+            await interaction.response.send_message("❌ Es ist ein interner Fehler aufgetreten.", ephemeral=True)
+
+    @discord.ui.button(label="Nein, abbrechen ❌", style=discord.ButtonStyle.danger, custom_id="verify_no")
+    async def confirm_no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = create_prestige_embed(
+            title="❌ Verifizierung abgebrochen",
+            description="> Der Vorgang wurde abgebrochen. Bitte starte die Verifizierung erneut mit dem richtigen Namen.",
+            color=0xff003c,
+            author_user=interaction.user,
+            bot_user=interaction.client.user
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        self.stop()
+
+
+# --- PERSISTENTE TICKET-ANSICHTEN (TICKET SYSTEM MIT CLAIM & LOGGING) ---
 
 class CloseTicketView(discord.ui.View):
-    """View für den Ticket-Schließen Button."""
+    """View für den Ticket-Schließen & Ticket-Claimen Button im Ticket."""
     def __init__(self):
         super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Ticket claimen", 
+        style=discord.ButtonStyle.primary, 
+        emoji="🙋‍♂️", 
+        custom_id="claim_ticket_btn"
+    )
+    async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        channel = interaction.channel
+        member = interaction.user
+
+        # Berechtigungs-Prüfung: Darf der User überhaupt Tickets betreuen?
+        support_role = discord.utils.get(guild.roles, name="🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁")
+        mod_role = discord.utils.get(guild.roles, name="🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿")
+        admin_role = discord.utils.get(guild.roles, name="🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻")
+        owner_role = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿")
+
+        # Prüfe ob der User eine Teamrolle besitzt
+        has_staff_role = any(role in [support_role, mod_role, admin_role, owner_role] for role in member.roles)
+        if not has_staff_role and not member.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Du gehörst nicht zum Support-Team!", ephemeral=True)
+            return
+
+        # Deaktiviere den Claim-Button
+        button.disabled = True
+        button.label = "Ticket geclaimed"
+        button.style = discord.ButtonStyle.secondary
+        
+        # Rechte im Ticket anpassen: Nur noch der Ersteller und das claimende Staff-Mitglied dürfen schreiben!
+        # Andere Supporter können den Ticket-Verlauf weiterhin mitlesen, aber nicht mehr stören.
+        try:
+            # Finde den Ticketersteller (über die Topic oder Berechtigungen)
+            ticket_creator = None
+            for overwrite_target, overwrite_value in channel.overwrites.items():
+                if isinstance(overwrite_target, discord.Member) and not overwrite_target.bot:
+                    ticket_creator = overwrite_target
+                    break
+
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+            }
+
+            if ticket_creator:
+                overwrites[ticket_creator] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+            # Andere Staff-Rollen dürfen nur noch lesen
+            for role in [support_role, mod_role, admin_role, owner_role]:
+                if role and role != guild.default_role:
+                    overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
+
+            await channel.edit(overwrites=overwrites)
+
+            # Sende Claim-Embed
+            claim_embed = create_prestige_embed(
+                title="🙋‍♂️ Ticket geclaimed!",
+                description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                            f"> Dieses Ticket wird nun exklusiv von {member.mention} betreut.\n"
+                            f"> Bitte richte alle weiteren Fragen direkt an deinen zuständigen Supporter.",
+                color=0x00f0ff,
+                author_user=member,
+                bot_user=interaction.client.user
+            )
+            await channel.send(embed=claim_embed)
+
+            # Update die ursprüngliche Nachricht des Buttons
+            await interaction.response.edit_message(view=self)
+
+            # In die System-Logs schreiben
+            ticket_logs_channel = discord.utils.get(guild.text_channels, name="💾│ticket-logs")
+            if ticket_logs_channel:
+                log_claim = create_prestige_embed(
+                    title="🙋‍♂️ Ticket geclaimed",
+                    description=f"> **Kanal:** {channel.mention}\n"
+                                f"> **Supporter:** {member.mention} ({member.id})",
+                    color=0x00f0ff,
+                    author_user=member,
+                    bot_user=interaction.client.user
+                )
+                await ticket_logs_channel.send(embed=log_claim)
+
+        except Exception as e:
+            logger.error(f"Fehler beim Claimen des Tickets: {e}")
+            await interaction.response.send_message("❌ Fehler beim Aktualisieren der Ticketrechte.", ephemeral=True)
 
     @discord.ui.button(
         label="Ticket schließen", 
@@ -95,7 +306,7 @@ class CloseTicketView(discord.ui.View):
         await interaction.response.send_message(embed=embed_closing, ephemeral=False)
         await asyncio.sleep(5)
 
-        # 📄 TICKET-TRANSCRIPT-BUILDER
+        # 📄 AUTOMATISCHER TICKET-TRANSCRIPT-BUILDER
         try:
             messages = []
             async for msg in channel.history(limit=1000, oldest_first=True):
@@ -231,7 +442,7 @@ class TicketButton(discord.ui.View):
                 name=ticket_channel_name,
                 category=category,
                 overwrites=overwrites,
-                topic=f"{ticket_type} von {member.name} | Zweck: Kauf / Fragen"
+                topic=f"{ticket_type} von {member.name}"
             )
 
             if ticket_type == "Kauf-Anfrage":
@@ -241,7 +452,7 @@ class TicketButton(discord.ui.View):
                     f"> 🤖 │ **Roblox Username:**\n"
                     f"> 📦 │ **Gewünschte Produkte:** (z.B. T-Shirt Vorlagen, Premium FastFlags)\n"
                     f"> 💳 │ **Zahlungsmethode:** (PayPal, Robux, Paysafecard, Krypto)\n\n"
-                    f"*Klicke unten auf den roten Button, um das Ticket zu schließen.*"
+                    f"*Mitarbeiter können das Ticket über den Knopf unten 'claimen'.*"
                 )
                 color = 0x39ff14
             elif ticket_type == "Allgemeiner Support":
@@ -251,7 +462,7 @@ class TicketButton(discord.ui.View):
                     f"**Beispiele für Support-Anfragen:**\n"
                     f"> ⚙️ │ Fragen zur Aktivierung der FastFlags\n"
                     f"> 🖥️ │ Technische Probleme mit Discord-Vorlagen\n\n"
-                    f"*Klicke unten auf den roten Button, um das Ticket zu schließen.*"
+                    f"*Mitarbeiter können das Ticket unten claimen.*"
                 )
                 color = 0x00f0ff
             else:
@@ -262,7 +473,7 @@ class TicketButton(discord.ui.View):
                     f"> 🔗 │ Server-Thema / Nische\n"
                     f"> 👥 │ Aktuelle Mitgliederanzahl\n"
                     f"> 📍 │ Unendlicher Einladungslink deines Servers\n\n"
-                    f"*Klicke unten auf den roten Button, um das Ticket zu schließen.*"
+                    f"*Mitarbeiter können dieses Ticket unten annehmen.*"
                 )
                 color = 0xffa500
 
@@ -280,6 +491,7 @@ class TicketButton(discord.ui.View):
                 if role: staff_pings.append(role.mention)
             pings_str = " ".join(staff_pings) if staff_pings else ""
 
+            # Sende mit Claim- und Close-Button
             await ticket_channel.send(
                 content=f"{member.mention} {pings_str}", 
                 embed=embed, 
@@ -312,44 +524,214 @@ class TicketButton(discord.ui.View):
             )
 
 
-# --- BOT CLASS ---
+# --- STATS-LOOP TASK (24/7 LIVE STATS COUNTER) ---
 
-class VoidShopBot(commands.Bot):
-    def __init__(self):
-        intents = discord.Intents.default()
-        intents.message_content = True
-        intents.guilds = True
-        intents.members = True
-        intents.invites = True
-        super().__init__(command_prefix=PREFIX, intents=intents, help_command=None)
-        self.invites_cache = {}
-
-    async def setup_hook(self):
-        self.add_view(TicketButton())
-        self.add_view(CloseTicketView())
-        logger.info("Persistente UI-Views geladen.")
-
-    async def on_ready(self):
-        activity = discord.Activity(
-            type=discord.ActivityType.watching, 
-            name="über 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 | !Start"
-        )
-        await self.change_presence(status=discord.Status.online, activity=activity)
+@tasks.loop(minutes=10)
+async def update_stats_task():
+    """Aktualisiert alle 10 Minuten die Namen der Server-Statistik Kanäle."""
+    logger.info("Starte Aktualisierung der Server-Statistiken...")
+    for guild in bot.guilds:
+        # Finde Daten
+        member_count = len(guild.members)
+        booster_count = guild.premium_subscription_count
         
-        # Cache Invites für Invite-Tracking
-        for guild in self.guilds:
+        customer_role = discord.utils.get(guild.roles, name="🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿")
+        customer_count = len(customer_role.members) if customer_role else 0
+
+        # Iteriere durch die Sprachkanäle und aktualisiere
+        for vc in guild.voice_channels:
             try:
-                self.invites_cache[guild.id] = await guild.invites()
-            except Exception:
-                pass
+                if vc.name.startswith("👥│Mitglieder:"):
+                    await vc.edit(name=f"👥│Mitglieder: {member_count}")
+                elif vc.name.startswith("💎│Booster:"):
+                    await vc.edit(name=f"💎│Booster: {booster_count}")
+                elif vc.name.startswith("🛒│Kunden:"):
+                    await vc.edit(name=f"🛒│Kunden: {customer_count}")
+            except discord.Forbidden:
+                logger.warning(f"Keine Berechtigung, den Stats-Kanal {vc.name} zu bearbeiten.")
+            except Exception as e:
+                logger.error(f"Fehler beim Editieren des Stats-Kanals: {e}")
 
-        logger.info(f"============= 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 PRESTIGE BOT ONLINE =============")
-        logger.info(f"Eingeloggt als: {self.user.name} ({self.user.id})")
-        logger.info(f"Webserver läuft auf Port: {os.environ.get('PORT', 8080)}")
-        logger.info(f"======================================================")
+
+# --- VERIFY & CHECKBUY COMMANDS (REAL ROBLOX API INTEGRATION) ---
+
+@bot.command(name="verify", aliases=["verify-roblox", "Verify"])
+@commands.guild_only()
+async def verify_command(ctx, roblox_username: str = None):
+    """
+    Verifiziert ein Discord-Mitglied mit seinem Roblox-Account.
+    Sucht live über die Roblox API, fragt nach Bestätigung und ändert Nickname + Rolle.
+    """
+    if not roblox_username:
+        embed_help = create_prestige_embed(
+            title="💡 Roblox Verifizierung",
+            description="> Bitte gib deinen Roblox Usernamen an!\n\n**Beispiel:**\n`!verify Lukas_Roblox`",
+            color=0xff003c,
+            author_user=ctx.author,
+            bot_user=bot.user
+        )
+        await ctx.send(embed=embed_help)
+        return
+
+    # Sende Zwischen-Status
+    progress_embed = create_prestige_embed(
+        title="🔍 Suche Roblox-Konto...",
+        description=f"> Kontaktiere die Roblox Server für **'{roblox_username}'**...",
+        color=0x00f0ff,
+        author_user=ctx.author,
+        bot_user=bot.user
+    )
+    status_msg = await ctx.send(embed=progress_embed)
+
+    roblox_id, roblox_display, roblox_name = await get_roblox_user(roblox_username)
+
+    if not roblox_id:
+        embed_err = create_prestige_embed(
+            title="❌ Konto nicht gefunden",
+            description=f"> Der Roblox Username **'{roblox_username}'** existiert nicht!\nBitte überprüfe die Schreibweise.",
+            color=0xff003c,
+            author_user=ctx.author,
+            bot_user=bot.user
+        )
+        await status_msg.edit(embed=embed_err)
+        return
+
+    # Hole Profilbild des Users
+    avatar_url = await get_roblox_avatar(roblox_id)
+
+    confirm_embed = create_prestige_embed(
+        title="🤖 Roblox-Account Bestätigung",
+        description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                    f"> **Bist du das wirklich?**\n\n"
+                    f"Bitte bestätige, ob dies dein echter Roblox-Account ist:\n"
+                    f"> **Roblox-Name:** {roblox_name}\n"
+                    f"> **Display-Name:** {roblox_display}\n"
+                    f"> **Roblox-ID:** `{roblox_id}`\n\n"
+                    f"Klicke auf den passenden Knopf unten, um den Vorgang abzuschließen.",
+        color=0xffd700,
+        author_user=ctx.author,
+        bot_user=bot.user
+    )
+    if avatar_url:
+        confirm_embed.set_thumbnail(url=avatar_url)
+
+    view = RobloxVerifyView(roblox_id, roblox_name, roblox_display)
+    await status_msg.edit(embed=confirm_embed, view=view)
 
 
-bot = VoidShopBot()
+@bot.command(name="checkbuy", aliases=["Checkbuy", "kaufprüfen"])
+@commands.guild_only()
+async def checkbuy_command(ctx, roblox_username: str = None, gamepass_id: int = None):
+    """
+    Prüft live über die Roblox Inventory API, ob der User den angegebenen Gamepass besitzt.
+    Wenn ja, schaltet er automatisch die Customer-Rollen frei!
+    """
+    if not roblox_username or not gamepass_id:
+        embed_help = create_prestige_embed(
+            title="🛒 Automatische Kaufprüfung",
+            description="> Prüfe live deinen Einkauf über Roblox und erhalte deine Rollen!\n\n"
+                        "**Nutzung:**\n"
+                        f"`!checkbuy <Roblox_Username> <Gamepass_ID>`\n\n"
+                        f"**Beispiel:**\n"
+                        f"`!checkbuy Lukas_Roblox 12345678`",
+            color=0x00f0ff,
+            author_user=ctx.author,
+            bot_user=bot.user
+        )
+        await ctx.send(embed=embed_help)
+        return
+
+    progress_embed = create_prestige_embed(
+        title="🔄 Überprüfe Roblox Inventar...",
+        description=f"> Suche Roblox-Konto **'{roblox_username}'** und überprüfe den Besitz von Gamepass `{gamepass_id}`...",
+        color=0xffd700,
+        author_user=ctx.author,
+        bot_user=bot.user
+    )
+    status_msg = await ctx.send(embed=progress_embed)
+
+    roblox_id, roblox_display, roblox_name = await get_roblox_user(roblox_username)
+    if not roblox_id:
+        embed_err = create_prestige_embed(
+            title="❌ Roblox Konto nicht gefunden",
+            description=f"> Der Username **'{roblox_username}'** wurde auf Roblox nicht gefunden.",
+            color=0xff003c,
+            author_user=ctx.author,
+            bot_user=bot.user
+        )
+        await status_msg.edit(embed=embed_err)
+        return
+
+    # Check ownership API
+    has_purchased = await check_roblox_ownership(roblox_id, gamepass_id)
+
+    if has_purchased:
+        guild = ctx.guild
+        member = ctx.author
+
+        # Customer & Premium Buyer Rollen holen
+        customer_role = discord.utils.get(guild.roles, name="🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿")
+        premium_buyer_role = discord.utils.get(guild.roles, name="💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿")
+
+        added_roles = []
+        try:
+            if customer_role:
+                await member.add_roles(customer_role)
+                added_roles.append(customer_role.name)
+            if premium_buyer_role:
+                await member.add_roles(premium_buyer_role)
+                added_roles.append(premium_buyer_role.name)
+
+            success_embed = create_prestige_embed(
+                title="🎉 Kauf verifiziert & Rollen vergeben!",
+                description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                            f"> ✨ **Besitz verifiziert!**\n\n"
+                            f"Du besitzt den Roblox Gamepass `{gamepass_id}`.\n"
+                            f"Folgende Premium-Käuferrollen wurden dir freigeschaltet:\n"
+                            f"> 👑 │ " + " & ".join([f"**{r}**" for r in added_roles]) + "\n\n"
+                            f"Vielen Dank für deinen Einkauf bei **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣**! Du hast ab jetzt Zugriff auf die exklusiven Lounges.",
+                color=0x39ff14,
+                author_user=member,
+                bot_user=bot.user
+            )
+            avatar_url = await get_roblox_avatar(roblox_id)
+            if avatar_url:
+                success_embed.set_thumbnail(url=avatar_url)
+            
+            await status_msg.edit(embed=success_embed)
+
+            # In logs eintragen
+            log_channel = discord.utils.get(guild.text_channels, name="⚙️│system-logs")
+            if log_channel:
+                log_embed = create_prestige_embed(
+                    title="🛒 Automatische Kaufverifizierung",
+                    description=f"> **User:** {member.mention} ({member.name})\n"
+                                f"> **Roblox:** {roblox_name} ({roblox_id})\n"
+                                f"> **Gamepass:** `{gamepass_id}`\n"
+                                f"> **Rollen erhalten:** " + ", ".join(added_roles),
+                    color=0x39ff14,
+                    author_user=member,
+                    bot_user=bot.user
+                )
+                await log_channel.send(embed=log_embed)
+
+        except discord.Forbidden:
+            await status_msg.edit(content="❌ Fehler: Dem Bot fehlen die Rechte zum Vergeben der Rollen. Stelle sicher, dass die Bot-Rolle ganz oben steht!")
+    else:
+        embed_fail = create_prestige_embed(
+            title="❌ Verifizierung fehlgeschlagen",
+            description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                        f"> 🔒 **Kauf wurde nicht gefunden.**\n\n"
+                        f"Roblox-User **{roblox_name}** besitzt den Gamepass `{gamepass_id}` aktuell nicht.\n"
+                        f"> Bitte stelle sicher, dass du den Gamepass mit diesem Account gekauft hast und dein Roblox Inventar öffentlich einsehbar ist!",
+            color=0xff003c,
+            author_user=ctx.author,
+            bot_user=bot.user
+        )
+        avatar_url = await get_roblox_avatar(roblox_id)
+        if avatar_url:
+            embed_fail.set_thumbnail(url=avatar_url)
+        await status_msg.edit(embed=embed_fail)
 
 
 # --- ROLES SETUP COMMAND (!role) ---
@@ -359,13 +741,13 @@ bot = VoidShopBot()
 @commands.has_permissions(administrator=True)
 async def create_roles_command(ctx):
     """
-    Erstellt alle 22 Premium-Rollen, prüft ob sie bereits existieren,
+    Erstellt alle 23 Premium-Rollen, prüft ob sie bereits existieren,
     und setzt im Anschluss alle Kanalrechte für diese Rollen.
-    Inklusive absolutem Fallback-Schutz vor Rechte-Konflikten.
+    Inklusive dynamic-permissions Schutz.
     """
     progress_embed = create_prestige_embed(
         title="👑 Rollen- & Berechtigungs-Setup",
-        description="> ⚙️ Initialisiere das Erstellen von 22 Premium-Rollen...\nBitte warten.",
+        description="> ⚙️ Initialisiere das Erstellen von 23 Premium-Rollen...\nBitte warten.",
         color=0x00f0ff,
         author_user=ctx.author,
         bot_user=bot.user
@@ -389,8 +771,9 @@ async def create_roles_command(ctx):
         # --- SPECIAL ROLES ---
         "🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿": (0xffa500, False),      # Orange
         "💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿": (0xf47fff, False),      # Pink
-        "🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜package": (0xffd700, False),          # Gold (VIP)
+        "🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣": (0xffd700, False),          # Gold (VIP)
         "🫂│ 𝗩𝗢𝗜𝗗 • 𝗙𝗿𝗶𝗲𝗻𝗱": (0xff69b4, False),        # Hot Pink
+        "👤│ 𝗩𝗢𝗜𝗗 • 𝗩𝗲𝗿𝗶𝗳𝗶𝗲𝗱": (0x7f8c8d, False),      # Gray-Blue (Verified)
         
         # --- CUSTOMER ROLES ---
         "🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿": (0xffff00, False),     # Yellow
@@ -425,10 +808,7 @@ async def create_roles_command(ctx):
             continue
 
         try:
-            # 🛡️ DYNAMISCHE RECHTE-FILTERUNG: Der Bot vergibt nur Rechte, die er selbst besitzt!
-            # Dadurch wird ein "Forbidden: 403 (höhere Rolle nötig)" von Discord absolut unmöglich gemacht.
             perms = discord.Permissions.none()
-            
             if is_admin and bot_permissions.administrator:
                 perms.administrator = True
             elif "Moderator" in role_name or "Manager" in role_name:
@@ -463,7 +843,6 @@ async def create_roles_command(ctx):
             roles_created_count += 1
             await asyncio.sleep(0.15)
         except discord.Forbidden:
-            # ERSTER FALLBACK: Erstelle die Rolle ohne spezielle Permissions (Falls dem Bot Rechte fehlen)
             try:
                 new_role = await guild.create_role(
                     name=role_name,
@@ -477,24 +856,23 @@ async def create_roles_command(ctx):
                 await asyncio.sleep(0.15)
             except discord.Forbidden:
                 roles_failed_count += 1
-                logger.error(f"Konnte Rolle {role_name} überhaupt nicht erstellen (Fehlende Rechte).")
+                logger.error(f"Konnte Rolle {role_name} überhaupt nicht erstellen.")
         except Exception as e:
             roles_failed_count += 1
             logger.error(f"Fehler bei {role_name}: {e}")
 
-    # Falls gar keine Rolle erstellt wurde und Fehler vorlagen, fehlt definitiv die Berechtigung
     if roles_failed_count > 0 and roles_created_count == 0 and roles_skipped_count == 0:
         embed_warning = create_prestige_embed(
             title="⚠️ FEHLER: Keine Rollen erstellt!",
             description=f"> Es konnte **keine einzige Rolle** erstellt werden!\n\n"
                         f"**Ursache:**\n"
-                        f"Dem Bot fehlt im Server die Berechtigung **'Rollen verwalten'** (Manage Roles) oder die Administrator-Rechte.\n\n"
+                        f"Dem Bot fehlt im Server die Berechtigung **'Rollen verwalten'** (Manage Roles).\n\n"
                         f"**So behebst du diesen Fehler:**\n"
                         f"1. Gehe in deine **Server-Einstellungen** ➔ **Rollen**.\n"
                         f"2. Klicke auf die Rolle deines Bots (`𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣`).\n"
-                        f"3. Aktiviere die Berechtigung **'Rollen verwalten'** (oder gib ihm direkt **'Administrator'**).\n"
-                        f"4. Stelle sicher, dass die Rolle des Bots in der Liste ganz oben steht.\n"
-                        f"5. Führe den Befehl `!role` erneut aus.",
+                        f"3. Aktiviere die Berechtigung **'Rollen verwalten'** (oder Administrator).\n"
+                        f"4. Ziehe meine Rolle ganz nach oben.\n"
+                        f"5. Führe `!role` erneut aus.",
             color=0xff003c,
             author_user=ctx.author,
             bot_user=bot.user
@@ -502,7 +880,6 @@ async def create_roles_command(ctx):
         await status_msg.edit(embed=embed_warning)
         return
 
-    # Extrahierte Rollenobjekte für Rechteverteilung (Sicherer Fallback falls Erstellung fehlschlug)
     r_everyone = guild.default_role
     r_member = created_roles.get("👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿") or r_everyone
     r_customer = created_roles.get("🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿") or r_everyone
@@ -518,11 +895,9 @@ async def create_roles_command(ctx):
     r_co_owner = created_roles.get("👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿") or r_everyone
     r_owner = created_roles.get("👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿") or r_everyone
 
-    # 3. SCHRITT: Rechteverteilung für Kanäle aktualisieren
     progress_embed.description = f"> 👑 Rollen geprüft: **{roles_created_count} erstellt**, **{roles_skipped_count} übersprungen**.\n> 🔒 Setze jetzt Berechtigungen für alle Kanäle..."
     await status_msg.edit(embed=progress_embed)
 
-    # Berechtigungsdefinitionen
     info_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, send_messages=False, add_reactions=True, read_message_history=True)}
     for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
         if r != r_everyone: info_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
@@ -560,7 +935,7 @@ async def create_roles_command(ctx):
         description=f"> 👑 **Rollen erstellt:** {roles_created_count}\n"
                     f"> 👑 **Rollen übersprungen:** {roles_skipped_count}\n"
                     f"> 🔒 **Kanäle konfiguriert:** {channels_processed}\n\n"
-                    f"Alle Berechtigungen wurden für deine 22 Rollen optimal eingestellt!",
+                    f"Alle Berechtigungen wurden für deine 23 Rollen optimal eingestellt!",
         color=0x39ff14,
         author_user=ctx.author,
         bot_user=bot.user
@@ -568,41 +943,7 @@ async def create_roles_command(ctx):
     await status_msg.edit(embed=success_embed)
 
 
-# --- SETUP CONFIRMATION VIEW & COMMAND (!Start) ---
-
-class SetupConfirmationView(discord.ui.View):
-    def __init__(self, ctx):
-        super().__init__(timeout=60)
-        self.ctx = ctx
-        self.value = None
-
-    @discord.ui.button(label="🧹 Komplett neu aufsetzen", style=discord.ButtonStyle.danger, emoji="🧹")
-    async def reset_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("Das kannst du nicht entscheiden!", ephemeral=True)
-            return
-        await interaction.response.defer()
-        self.value = "reset"
-        self.stop()
-
-    @discord.ui.button(label="➕ Nur hinzufügen", style=discord.ButtonStyle.success, emoji="➕")
-    async def add_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("Das kannst du nicht entscheiden!", ephemeral=True)
-            return
-        await interaction.response.defer()
-        self.value = "add"
-        self.stop()
-
-    @discord.ui.button(label="❌ Abbrechen", style=discord.ButtonStyle.secondary, emoji="❌")
-    async def cancel_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("Das kannst du nicht entscheiden!", ephemeral=True)
-            return
-        await interaction.response.defer()
-        self.value = "cancel"
-        self.stop()
-
+# --- START COMMAND ---
 
 @bot.command(name="Start", aliases=["start"])
 @commands.guild_only()
@@ -616,8 +957,8 @@ async def start(ctx):
         title="⚠️ 𝗩𝗢𝗜𝗗 • SERVER SETUP INITIALISIERUNG ⚠️",
         description=f"Hallo {ctx.author.mention},\n\ndu bist dabei, das **Prestige Server-Layout** für **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣** aufzubauen.\n"
                     f"Dieses Setup generiert:\n"
-                    f"> 📁 │ **6 Hauptkategorien & 1 Log-Kategorie**\n"
-                    f"> 💬 │ **24 Textkanäle, 6 Voicekanäle & 7 professionelle Log-Kanäle**\n"
+                    f"> 📁 │ **6 Hauptkategorien, 1 Log-Kategorie & 1 Stats-Kategorie**\n"
+                    f"> 💬 │ **26 Textkanäle, 7 Voicekanäle & 7 professionelle Log-Kanäle (Gesamt: 40 Kanäle)**\n"
                     f"> ⚙️ │ **Vollständiges Embed-Design in allen Infokanälen**\n\n"
                     f"Bitte wähle eine Option aus:\n\n"
                     f"🧹 **Komplett neu aufsetzen:** Löscht alle Kanäle (außer den aktuellen) und baut neu auf.\n"
@@ -669,7 +1010,7 @@ async def start(ctx):
     r_member = discord.utils.get(guild.roles, name="👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿") or r_everyone
     r_customer = discord.utils.get(guild.roles, name="🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿") or r_everyone
     r_premium_buyer = discord.utils.get(guild.roles, name="💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿") or r_everyone
-    r_vip = discord.utils.get(guild.roles, name="🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜package") or r_everyone
+    r_vip = discord.utils.get(guild.roles, name="🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣") or r_everyone
     r_booster = discord.utils.get(guild.roles, name="💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿") or r_everyone
     r_partner = discord.utils.get(guild.roles, name="🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿") or r_everyone
     r_support = discord.utils.get(guild.roles, name="🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁") or r_everyone
@@ -701,16 +1042,27 @@ async def start(ctx):
     for r in [r_manager, r_admin, r_co_owner, r_owner]:
         if r != r_everyone: log_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-    status_embed.description = "> 📁 Erstelle Server-Struktur & 37 Kanäle..."
+    status_embed.description = "> 📁 Erstelle Server-Struktur & 40 Kanäle..."
     await status_msg.edit(embed=status_embed)
 
     categories_layout = [
+        {
+            "name": "📊│── 𝗩𝗢𝗜𝗗 • 𝗦𝗧𝗔𝗧𝗦 ──",
+            "overwrites": info_overwrites,
+            "channels": [
+                {"name": "👥│Mitglieder: 0", "type": "voice", "description": ""},
+                {"name": "💎│Booster: 0", "type": "voice", "description": ""},
+                {"name": "🛒│Kunden: 0", "type": "voice", "description": ""}
+            ]
+        },
         {
             "name": "📢│── 𝗩𝗢𝗜𝗗 • 𝗜𝗡𝗙𝗢 ──",
             "overwrites": info_overwrites,
             "channels": [
                 {"name": "📢│news", "type": "text", "description": "Wichtige Ankündigungen & News"},
                 {"name": "📜│rules", "type": "text", "description": "Das Serverregelwerk"},
+                {"name": "👋│willkommen", "type": "text", "description": "Begrüßungskanal für neue Mitglieder"},
+                {"name": "💨│aufwiedersehen", "type": "text", "description": "Verabschiedungskanal"},
                 {"name": "🎁│giveaways", "type": "text", "description": "Spannende Giveaways & Gewinne"},
                 {"name": "🤝│vouches", "type": "text", "description": "Erfahrungen unserer Käufer"},
                 {"name": "📩│invites", "type": "text", "description": "Lade Freunde ein für Belohnungen!"},
@@ -1000,7 +1352,7 @@ async def start(ctx):
 
     status_embed.title = "🎉 Server-Setup erfolgreich abgeschlossen! 🎉"
     status_embed.description = (
-        f"> 📁 **Kategorien & Kanäle:** 39 Kanäle erfolgreich eingerichtet.\n"
+        f"> 📁 **Kategorien & Kanäle:** 40 Kanäle erfolgreich eingerichtet.\n"
         f"> 🔒 **Rechte:** Hochsicheres, fehlerfreies Rechtesystem aktiv.\n"
         f"> 🎟️ **Tickets:** Interaktive Multi-Tickets sind einsatzbereit!\n\n"
         f"Nutze `/start` oder lösche diese Nachricht, falls gewünscht."
@@ -1173,8 +1525,29 @@ async def on_voice_state_update(member, before, after):
 
 @bot.event
 async def on_member_join(member):
-    """Loggt Serverbeitritte & Invite-Tracking."""
+    """Loggt Serverbeitritte, sendet Willkommens-Embeds & Invite-Tracking."""
     guild = member.guild
+    
+    # ✉️ WILLKOMMENS EMBED IN #willkommen
+    welcome_channel = discord.utils.get(guild.text_channels, name="📢│news") # Nutzt news oder einen dedizierten, falls vorhanden
+    if welcome_channel:
+        embed_welcome_msg = create_prestige_embed(
+            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n👋 HERZLICH WILLKOMMEN BEI 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 👋\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
+            description=f"Hallo {member.mention}!\n"
+                        f"Wir freuen uns ungemein, dich auf unserem prestigeträchtigen Server begrüßen zu dürfen.\n\n"
+                        f"**Deine ersten Schritte:**\n"
+                        f"> 🔐 │ Verifiziere dich live mit dem Befehl: `!verify <Username>`\n"
+                        f"> 🛒 │ Schalte exklusive Rollen frei mit dem Befehl: `!checkbuy <Username> <Gamepass_ID>`\n"
+                        f"> 🎟️ │ Für Fragen oder Käufe, öffne einfach ein Ticket in <#1234> (oder im Ticketkanal).\n\n"
+                        f"📌 │ Du bist unser **{len(guild.members)}.** wertvolles Mitglied!",
+            color=0x00f0ff,
+            author_user=member,
+            bot_user=bot.user
+        )
+        embed_welcome_msg.set_thumbnail(url=member.display_avatar.url)
+        await welcome_channel.send(embed=embed_welcome_msg)
+
+    # Standard-Logs befüllen
     log_channel = discord.utils.get(guild.text_channels, name="📥│join-leave-logs")
     invite_log_channel = discord.utils.get(guild.text_channels, name="📩│invite-logs")
     
@@ -1219,7 +1592,7 @@ async def on_member_join(member):
 
 @bot.event
 async def on_member_remove(member):
-    """Loggt Austritte & Kicks."""
+    """Loggt Austritte, Abschieds-Embeds & Kicks."""
     guild = member.guild
     kicked_by = None
     reason = "Kein Grund angegeben"
@@ -1359,6 +1732,10 @@ if __name__ == "__main__":
         # Flask Webserver für 24/7 online halten auf Railway starten
         keep_alive()
         
+        # Starte den Stats-Update-Loop
+        if not update_stats_task.is_running():
+            update_stats_task.start()
+            
         try:
             bot.run(TOKEN)
         except discord.errors.LoginFailure:
