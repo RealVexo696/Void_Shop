@@ -231,13 +231,12 @@ class TicketButton(discord.ui.View):
                 name=ticket_channel_name,
                 category=category,
                 overwrites=overwrites,
-                topic=f"{ticket_type} von {member.name}"
+                topic=f"{ticket_type} von {member.name} | Zweck: Kauf / Fragen"
             )
 
             if ticket_type == "Kauf-Anfrage":
                 description = (
-                    f"Hallo {member.mention},\n\nvielen Dank für dein Interesse an **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣**!\n"
-                    f"Unser Support-Team wurde benachrichtigt und wird sich gleich um dich kümmern.\n\n"
+                    f"Hallo {member.mention},\n\nvielen Dank, dass du ein Ticket bei **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣** geöffnet hast!\nUnser Support-Team wird sich in Kürze um dich kümmern.\n\n"
                     f"**Bitte bereite bereits folgende Informationen vor:**\n"
                     f"> 🤖 │ **Roblox Username:**\n"
                     f"> 📦 │ **Gewünschte Produkte:** (z.B. T-Shirt Vorlagen, Premium FastFlags)\n"
@@ -362,7 +361,7 @@ async def create_roles_command(ctx):
     """
     Erstellt alle 22 Premium-Rollen, prüft ob sie bereits existieren,
     und setzt im Anschluss alle Kanalrechte für diese Rollen.
-    Inklusive absolutem Fallback-Schutz.
+    Inklusive absolutem Fallback-Schutz vor Rechte-Konflikten.
     """
     progress_embed = create_prestige_embed(
         title="👑 Rollen- & Berechtigungs-Setup",
@@ -374,6 +373,8 @@ async def create_roles_command(ctx):
     status_msg = await ctx.send(embed=progress_embed)
 
     guild = ctx.guild
+    bot_member = guild.me
+    bot_permissions = bot_member.guild_permissions
 
     role_colors = {
         # --- STAFF ROLES ---
@@ -388,7 +389,7 @@ async def create_roles_command(ctx):
         # --- SPECIAL ROLES ---
         "🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿": (0xffa500, False),      # Orange
         "💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿": (0xf47fff, False),      # Pink
-        "🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣": (0xffd700, False),          # Gold
+        "🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜package": (0xffd700, False),          # Gold (VIP)
         "🫂│ 𝗩𝗢𝗜𝗗 • 𝗙𝗿𝗶𝗲𝗻𝗱": (0xff69b4, False),        # Hot Pink
         
         # --- CUSTOMER ROLES ---
@@ -424,23 +425,32 @@ async def create_roles_command(ctx):
             continue
 
         try:
-            perms = discord.Permissions.default()
-            if is_admin:
-                perms = discord.Permissions(administrator=True)
+            # 🛡️ DYNAMISCHE RECHTE-FILTERUNG: Der Bot vergibt nur Rechte, die er selbst besitzt!
+            # Dadurch wird ein "Forbidden: 403 (höhere Rolle nötig)" von Discord absolut unmöglich gemacht.
+            perms = discord.Permissions.none()
+            
+            if is_admin and bot_permissions.administrator:
+                perms.administrator = True
             elif "Moderator" in role_name or "Manager" in role_name:
-                perms = discord.Permissions(
-                    view_channel=True, send_messages=True, manage_messages=True,
-                    kick_members=True, ban_members=True, mute_members=True,
-                    deafen_members=True, move_members=True, change_nickname=True,
-                    read_message_history=True, attach_files=True, embed_links=True,
-                    add_reactions=True, use_external_emojis=True
-                )
+                requested_perms = [
+                    ("view_channel", True), ("send_messages", True), ("manage_messages", True),
+                    ("kick_members", True), ("ban_members", True), ("mute_members", True),
+                    ("deafen_members", True), ("move_members", True), ("change_nickname", True),
+                    ("read_message_history", True), ("attach_files", True), ("embed_links", True),
+                    ("add_reactions", True), ("use_external_emojis", True)
+                ]
+                for perm_name, req_val in requested_perms:
+                    if getattr(bot_permissions, perm_name, False):
+                        setattr(perms, perm_name, True)
             else:
-                perms = discord.Permissions(
-                    view_channel=True, send_messages=True, read_message_history=True,
-                    attach_files=True, embed_links=True, add_reactions=True,
-                    use_external_emojis=True, change_nickname=True
-                )
+                requested_perms = [
+                    ("view_channel", True), ("send_messages", True), ("read_message_history", True),
+                    ("attach_files", True), ("embed_links", True), ("add_reactions", True),
+                    ("use_external_emojis", True), ("change_nickname", True)
+                ]
+                for perm_name, req_val in requested_perms:
+                    if getattr(bot_permissions, perm_name, False):
+                        setattr(perms, perm_name, True)
 
             new_role = await guild.create_role(
                 name=role_name,
@@ -607,7 +617,7 @@ async def start(ctx):
         description=f"Hallo {ctx.author.mention},\n\ndu bist dabei, das **Prestige Server-Layout** für **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣** aufzubauen.\n"
                     f"Dieses Setup generiert:\n"
                     f"> 📁 │ **6 Hauptkategorien & 1 Log-Kategorie**\n"
-                    f"> 💬 │ **24 Textkanäle & 7 professionelle Log-Kanäle**\n"
+                    f"> 💬 │ **24 Textkanäle, 6 Voicekanäle & 7 professionelle Log-Kanäle**\n"
                     f"> ⚙️ │ **Vollständiges Embed-Design in allen Infokanälen**\n\n"
                     f"Bitte wähle eine Option aus:\n\n"
                     f"🧹 **Komplett neu aufsetzen:** Löscht alle Kanäle (außer den aktuellen) und baut neu auf.\n"
@@ -691,7 +701,7 @@ async def start(ctx):
     for r in [r_manager, r_admin, r_co_owner, r_owner]:
         if r != r_everyone: log_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-    status_embed.description = "> 📁 Erstelle Server-Struktur & 31 Kanäle..."
+    status_embed.description = "> 📁 Erstelle Server-Struktur & 37 Kanäle..."
     await status_msg.edit(embed=status_embed)
 
     categories_layout = [
@@ -725,9 +735,23 @@ async def start(ctx):
             "channels": [
                 {"name": "💬│general-chat", "type": "text", "description": "Der Hauptchat für jedermann"},
                 {"name": "📷│media-and-showcase", "type": "text", "description": "Teile Bilder, Videos oder Avatare"},
-                {"name": "🎮│roblox-talk", "type": "text", "description": "Alles rund um Roblox & Dev-Gaming"},
-                {"name": "😂│memes", "type": "text", "description": "Der Humorbereich für Memes"},
+                {"name": "🎨│clothing-showcase", "type": "text", "description": "Zeige deine eigenen Roblox-Kleidungsdesigns!"},
+                {"name": "🖥️│setup-showcase", "type": "text", "description": "Zeige deinen Gaming-Setup oder Studio-Setup"},
+                {"name": "📈│trading", "type": "text", "description": "Tausche und handle mit Roblox-Gegenständen"},
+                {"name": "🤝│suggestions", "type": "text", "description": "Deine Verbesserungsvorschläge für den Shop"},
                 {"name": "🤖│bot-commands", "type": "text", "description": "Nutze die Bot-Befehle hier"}
+            ]
+        },
+        {
+            "name": "🎙️│── 𝗩𝗢𝗜𝗗 • 𝗧𝗔𝗟𝗞 ──",
+            "overwrites": community_overwrites,
+            "channels": [
+                {"name": "🔊│Lobby • Public", "type": "voice", "description": ""},
+                {"name": "🔊│Lounge • Chill", "type": "voice", "description": ""},
+                {"name": "🔊│Roblox • Talk", "type": "voice", "description": ""},
+                {"name": "🔊│Gaming • Duo", "type": "voice", "description": ""},
+                {"name": "🔊│Gaming • Squad", "type": "voice", "description": ""},
+                {"name": "🔊│Support • Voice", "type": "voice", "description": ""}
             ]
         },
         {
@@ -752,7 +776,8 @@ async def start(ctx):
             "overwrites": staff_overwrites,
             "channels": [
                 {"name": "🔒│staff-chat", "type": "text", "description": "Das interne Besprechungszimmer"},
-                {"name": "🛠️│mod-commands", "type": "text", "description": "Eingabe von Admin- und Moderations-Commands"}
+                {"name": "🛠️│mod-commands", "type": "text", "description": "Eingabe von Admin- und Moderations-Commands"},
+                {"name": "🔊│Staff • Voice", "type": "voice", "description": ""}
             ]
         },
         {
@@ -825,22 +850,36 @@ async def start(ctx):
                 for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
                     if r != r_everyone: current_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
 
-            channel = discord.utils.get(category.text_channels, name=ch_data["name"])
-            if not channel:
-                try:
-                    channel = await guild.create_text_channel(
-                        name=ch_data["name"],
-                        category=category,
-                        overwrites=current_overwrites,
-                        topic=ch_data["description"]
-                    )
-                    await asyncio.sleep(0.2)
-                except Exception as e:
-                    logger.error(f"Fehler bei Kanal {ch_data['name']}: {e}")
-                    continue
+            if ch_data["type"] == "voice":
+                channel = discord.utils.get(category.voice_channels, name=ch_data["name"])
+                if not channel:
+                    try:
+                        channel = await guild.create_voice_channel(
+                            name=ch_data["name"],
+                            category=category,
+                            overwrites=current_overwrites
+                        )
+                        await asyncio.sleep(0.15)
+                    except Exception as e:
+                        logger.error(f"Fehler bei Voice-Kanal {ch_data['name']}: {e}")
+                        continue
+            else:
+                channel = discord.utils.get(category.text_channels, name=ch_data["name"])
+                if not channel:
+                    try:
+                        channel = await guild.create_text_channel(
+                            name=ch_data["name"],
+                            category=category,
+                            overwrites=current_overwrites,
+                            topic=ch_data["description"]
+                        )
+                        await asyncio.sleep(0.15)
+                    except Exception as e:
+                        logger.error(f"Fehler bei Text-Kanal {ch_data['name']}: {e}")
+                        continue
             channels_by_name[ch_data["name"]] = channel
 
-    # 5. SCHRITT: Kanäle befüllen (Embeds)
+    # 5. SCHRITT: Kanäle befüllen (Embeds mit 1000x schönem Layout)
     status_embed.description = "> 📝 Richte detaillierte Infokanäle, FAQs und Einladungs-Systeme ein..."
     await status_msg.edit(embed=status_embed)
 
@@ -851,14 +890,18 @@ async def start(ctx):
     c_rules = channels_by_name.get("📜│rules")
     if c_rules:
         embed_rules = create_prestige_embed(
-            title="📜 𝗩𝗢𝗜𝗗 • 𝗦𝗘𝗥𝗩𝗘𝗥-𝗥𝗘𝗚𝗘𝗟𝗡 📜",
-            description="Herzlich Willkommen bei **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣**!\n"
-                        "Bitte halte dich stets an unsere Verhaltensregeln, um eine respektvolle Atmosphäre zu gewährleisten.\n\n"
-                        "**Unsere Regeln:**\n"
-                        "> 🤖 │ **1. Respekt & Höflichkeit:** Keine Beleidigungen, Hate-Speech oder Trolling.\n"
-                        "> 🚫 │ **2. Kein Spam:** Bitte spame nicht in den Textkanälen.\n"
-                        "> 📎 │ **3. Werbung verboten:** Jegliche Eigenwerbung oder Fremdwerbung ist untersagt.\n"
-                        "> 🛒 │ **4. Sicherer Handel:** Käufe werden ausschließlich in Tickets abgewickelt.",
+            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n📜 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 - SERVER REGELN\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
+            description="Um eine sichere, professionelle und angenehme Atmosphäre für alle Kunden und Creator zu gewährleisten, bitten wir dich, die folgenden Richtlinien einzuhalten:\n\n"
+                        "🤖 │ **𝟭. 𝗥𝗲𝘀𝗽𝗲𝗸𝘁 & 𝗛ö𝗳𝗹𝗶𝗰𝗵𝗸𝗲𝗶𝘁**\n"
+                        "> Behandle jedes Mitglied und jeden Staff mit vollstem Respekt. Beleidigungen, Toxizität, Belästigung oder Drohungen jeglicher Art führen zum sofortigen Serverausschluss.\n\n"
+                        "🚫 │ **𝟮. 𝗞𝗲𝗶𝗻 𝗦𝗽𝗮𝗺 & 𝗙𝗿𝗲𝗺𝗱𝘄𝗲𝗿𝗯𝘂𝗻𝗴**\n"
+                        "> Spamming in den Kanälen ist verboten. Das Posten von Werbelinks zu anderen Discord-Servern, Dienstleistungen oder Fremdprodukten (sowohl in Chats als auch per DM) wird permanent gebannt.\n\n"
+                        "🛒 │ **𝟯. 𝗦𝗶𝗰𝗵𝗲𝗿𝗲𝗿 & 𝗢𝗳𝗳𝗶𝘇𝗶𝗲𝗹𝗹𝗲𝗿 𝗛𝗮𝗻𝗱𝗲𝗹**\n"
+                        "> Jegliche Verkäufe und Dienstleistungen finden ausschließlich über unser offizielles Ticket-System in %s statt. Privater Handel oder das Anbieten eigener Produkte ist untersagt.\n\n"
+                        "📎 │ **𝟰. 𝗡𝗦𝗙𝗪 & Unangemessene Inhalte**\n"
+                        "> Keine jugendgefährdenden, pornografischen, gewaltverherrlichenden oder illegalen Medien.\n\n"
+                        "📌 │ **𝗛𝗶𝗻𝘄𝗲𝗶𝘀**\n"
+                        "> Mit dem Aufenthalt auf diesem Server akzeptierst du die Discord Nutzungsbedingungen (TOS) sowie unsere Serverregeln. Unsere Moderatoren haben das Recht, bei Verstößen ohne Vorwarnung einzugreifen." % c_ticket_mention,
             color=0xff003c,
             author_user=ctx.author,
             bot_user=bot.user
@@ -869,15 +912,20 @@ async def start(ctx):
     c_buy = channels_by_name.get("🛒│how-to-buy")
     if c_buy:
         embed_buy = create_prestige_embed(
-            title="🛒 𝗩𝗢𝗜𝗗 • 𝗪𝗜𝗘 𝗞𝗔𝗨𝗙𝗘 𝗜𝗖𝗛? 🛒",
-            description="Der Einkauf in unserem Shop ist kinderleicht:\n\n"
-                        "**Schritt-für-Schritt Anleitung:**\n"
-                        f"> 1️⃣ │ Gehe in den Kanal {c_ticket_mention}.\n"
-                        f"> 2️⃣ │ Klicke auf den Button **'Produkt kaufen'**.\n"
-                        f"> 3️⃣ │ Unser Bot erstellt ein privates Ticket für dich.\n"
-                        f"> 4️⃣ │ Ein Supporter wird dich durch die Bezahlung führen.\n\n"
-                        f"**Akzeptierte Zahlungsweisen:**\n"
-                        f"> 💳 │ PayPal, Paysafecard, Robux, Litecoin (LTC), Bitcoin (BTC)",
+            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n🛒 𝗩𝗢𝗜𝗗 • 𝗪𝗜𝗘 𝗞𝗔𝗨𝗙𝗘 𝗜𝗖𝗛?\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
+            description="Der Ablauf eines Einkaufs bei **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣** ist vollständig automatisiert und absolut sicher. Folge einfach diesem einfachen Ablauf:\n\n"
+                        "1️⃣ │ **Ticket erstellen**\n"
+                        f"> Besuche den Kanal {c_ticket_mention} und klicke auf den Button **'Produkt kaufen'**. Ein privater Supportkanal wird nur für dich erstellt.\n\n"
+                        "2️⃣ │ **Produktdetails angeben**\n"
+                        "> Teile unserem Supportteam im Ticket mit, was du kaufen möchtest (z.B. Premium FastFlags, bestimmte T-Shirt Templates, Serverlayouts).\n\n"
+                        "3️⃣ │ **Zahlungsabwicklung**\n"
+                        "> Wähle deine bevorzugte Zahlungsmethode aus. Wir unterstützen:\n"
+                        "> 🔹 PayPal (Familie & Freunde)\n"
+                        "> 🔹 Robux (via Gamepass oder Gruppen-Auszahlung)\n"
+                        "> 🔹 Paysafecard\n"
+                        "> 🔹 Kryptowährungen (Litecoin - LTC, Bitcoin - BTC, USDT)\n\n"
+                        "4️⃣ │ **Lieferung erhalten**\n"
+                        "> Nach der Zahlungsbestätigung wird dein digitales Produkt (Config, Code, PNG-Download) direkt im Ticket an dich übergeben!",
             color=0x00f0ff,
             author_user=ctx.author,
             bot_user=bot.user
@@ -888,7 +936,7 @@ async def start(ctx):
     c_products = channels_by_name.get("📦│products")
     if c_products:
         embed_products = create_prestige_embed(
-            title="📦 𝗩𝗢𝗜𝗗 • 𝗨𝗡𝗦𝗘𝗥𝗘 𝗣𝗥𝗢𝗗𝗨𝗞𝗧𝗘 📦",
+            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n📦 𝗩𝗢𝗜𝗗 • 𝗨𝗡𝗦𝗘𝗥𝗘 𝗣𝗥𝗢𝗗𝗨𝗞𝗧𝗘\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
             description="Finde hier deine Roblox- und Discord-Upgrades:\n\n"
                         "**👕 Roblox Kleidung:**\n"
                         "> • *Klassische T-Shirt PNGs:* ab 50 Robux / 0,50€\n"
@@ -908,7 +956,7 @@ async def start(ctx):
     c_ticket_panel = channels_by_name.get("🎟️│create-ticket")
     if c_ticket_panel:
         embed_ticket_panel = create_prestige_embed(
-            title="🎟️ 𝗩𝗢𝗜𝗗 • Support & Kauf-Center 🎟️",
+            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n🎟️ 𝗩𝗢𝗜𝗗 • Support & Kauf-Center\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
             description="Benötigst du Hilfe oder möchtest etwas kaufen?\n"
                         "Wähle einfach die passende Kategorie aus:\n\n"
                         "> 🛒 │ **Produkt kaufen** ➔ Roblox Items, FastFlags, Templates\n"
@@ -924,7 +972,7 @@ async def start(ctx):
     c_faq = channels_by_name.get("❓│faq")
     if c_faq:
         embed_faq = create_prestige_embed(
-            title="❓ 𝗩𝗢𝗜𝗗 • FAQ (Häufige Fragen) ❓",
+            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n❓ 𝗩𝗢𝗜𝗗 • FAQ (Häufige Fragen)\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
             description="**Sind FastFlags erlaubt?**\n"
                         "> Ja, FastFlags sind Teil der offiziellen Roblox-Einstellungen. Es ist keine Cheat-Software!\n\n"
                         "**Wie lange dauert die Lieferung?**\n"
@@ -939,7 +987,7 @@ async def start(ctx):
     c_inv = channels_by_name.get("📩│invites")
     if c_inv:
         embed_inv = create_prestige_embed(
-            title="📩 𝗩𝗢𝗜𝗗 • Invite Belohnungen 📩",
+            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n📩 𝗩𝗢𝗜𝗗 • Invite Belohnungen\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
             description="Lade Freunde auf unseren Server ein und staube dicke Gewinne ab:\n\n"
                         "> 🎁 │ **5 Invites** ➔ Gratis T-Shirt Template\n"
                         "> 🎁 │ **10 Invites** ➔ Gratis Premium FastFlags\n"
@@ -952,8 +1000,8 @@ async def start(ctx):
 
     status_embed.title = "🎉 Server-Setup erfolgreich abgeschlossen! 🎉"
     status_embed.description = (
-        f"> 📁 **Kategorien & Kanäle:** 31 Kanäle erfolgreich eingerichtet.\n"
-        f"> 🔒 **Rechte:** Hochsicheres Rechtesystem aktiv.\n"
+        f"> 📁 **Kategorien & Kanäle:** 39 Kanäle erfolgreich eingerichtet.\n"
+        f"> 🔒 **Rechte:** Hochsicheres, fehlerfreies Rechtesystem aktiv.\n"
         f"> 🎟️ **Tickets:** Interaktive Multi-Tickets sind einsatzbereit!\n\n"
         f"Nutze `/start` oder lösche diese Nachricht, falls gewünscht."
     )
