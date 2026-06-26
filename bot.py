@@ -524,6 +524,46 @@ class TicketButton(discord.ui.View):
             )
 
 
+# --- BOT KLASSE ---
+
+class VoidShopBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.guilds = True
+        intents.members = True
+        intents.invites = True
+        super().__init__(command_prefix=PREFIX, intents=intents, help_command=None)
+        self.invites_cache = {}
+
+    async def setup_hook(self):
+        self.add_view(TicketButton())
+        self.add_view(CloseTicketView())
+        logger.info("Persistente UI-Views geladen.")
+
+    async def on_ready(self):
+        activity = discord.Activity(
+            type=discord.ActivityType.watching, 
+            name="über 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 | !Start"
+        )
+        await self.change_presence(status=discord.Status.online, activity=activity)
+        
+        # Cache Invites für Invite-Tracking
+        for guild in self.guilds:
+            try:
+                self.invites_cache[guild.id] = await guild.invites()
+            except Exception:
+                pass
+
+        logger.info(f"============= 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 PRESTIGE BOT ONLINE =============")
+        logger.info(f"Eingeloggt als: {self.user.name} ({self.user.id})")
+        logger.info(f"Webserver läuft auf Port: {os.environ.get('PORT', 8080)}")
+        logger.info(f"======================================================")
+
+
+bot = VoidShopBot()
+
+
 # --- STATS-LOOP TASK (24/7 LIVE STATS COUNTER) ---
 
 @tasks.loop(minutes=10)
