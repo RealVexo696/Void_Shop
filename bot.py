@@ -1767,7 +1767,7 @@ async def on_command_error(ctx, error):
 
 if __name__ == "__main__":
     if not TOKEN or TOKEN == "DEIN_BOT_TOKEN_HIER":
-        logger.error("FEHLER: Bitte gib einen gültigen Discord Bot-Token direkt in der 'bot.py' Datei (Zeile 30) an!")
+        logger.error("FEHLER: Bitte gib einen gültigen Discord Bot-Token direkt in der 'bot.py' Datei (Zeile 37) an!")
     else:
         # Flask Webserver für 24/7 online halten auf Railway starten
         keep_alive()
@@ -1779,6 +1779,6 @@ if __name__ == "__main__":
         try:
             bot.run(TOKEN)
         except discord.errors.LoginFailure:
-            logger.error("FEHLER: Der angegebene Bot-Token ist ungültig! Bitte überprüfe den Token in deiner 'bot.py' Datei (Zeile 30).")
+            logger.error("FEHLER: Der angegebene Bot-Token ist ungültig! Bitte überprüfe den Token in deiner 'bot.py' Datei (Zeile 37).")
         except Exception as e:
             logger.error(f"Fehler beim Starten des Bots: {e}")
