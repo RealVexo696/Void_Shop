@@ -34,7 +34,7 @@ logger = logging.getLogger('void_shop_bot')
 #                                KONFIGURATION
 # ==============================================================================
 # Trage hier direkt deinen Discord Bot-Token ein!
-TOKEN = ""  
+TOKEN = "MTUyMDE3MDg0MTQ2NjQ3MDUyMQ.GbIcAF.OBOLoyO8IKC3sbfr1oVuWEMwAw4PphQXy4RCWQ"  
 
 # Der Prefix für deine Befehle (Standard ist !)
 PREFIX = "!"
@@ -413,6 +413,10 @@ class CloseTicketView(discord.ui.View):
         custom_id="close_ticket_btn"
     )
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
         guild = interaction.guild
         channel = interaction.channel
 
@@ -423,7 +427,7 @@ class CloseTicketView(discord.ui.View):
             author_user=interaction.user,
             bot_user=interaction.client.user
         )
-        await interaction.response.send_message(embed=embed_closing, ephemeral=False)
+        await channel.send(embed=embed_closing)
         await asyncio.sleep(5)
 
         # 📄 AUTOMATISCHER TICKET-TRANSCRIPT-BUILDER
@@ -908,7 +912,7 @@ async def checkbuy_command(ctx, roblox_username: str = None, gamepass_id: int = 
                     author_user=member,
                     bot_user=bot.user
                 )
-                await log_channel.send(log_embed)
+                await log_channel.send(embed=log_embed)
 
         except discord.Forbidden:
             await status_msg.edit(content="❌ Fehler: Dem Bot fehlen die Rechte zum Vergeben der Rollen. Stelle sicher, dass die Bot-Rolle ganz oben steht!")
@@ -1627,7 +1631,7 @@ async def start(ctx):
         f"> 📁 **Kategorien & Kanäle:** 41 Kanäle erfolgreich eingerichtet.\n"
         f"> 🔒 **Rechte:** Hochsicheres, fehlerfreies Rechtesystem aktiv.\n"
         f"> 🎟️ **Tickets:** Interaktive Multi-Tickets mit Claim-Funktion sind einsatzbereit!\n\n"
-        f"Nutze `/start` oder lösche diese Nachricht, falls gewünscht."
+        f"Nutze `!Start` oder lösche diese Nachricht, falls gewünscht."
     )
     status_embed.color = 0x39ff14
     await status_msg.edit(embed=status_embed)
@@ -1681,10 +1685,14 @@ async def on_guild_channel_create(channel):
     log_channel = discord.utils.get(channel.guild.text_channels, name="⚙️│system-logs")
     if log_channel:
         moderator = None
-        async for entry in channel.guild.audit_logs(action=discord.AuditLogAction.channel_create, limit=1):
-            if entry.target.id == channel.id:
-                moderator = entry.user
-                break
+        try:
+            now = discord.utils.utcnow()
+            async for entry in channel.guild.audit_logs(action=discord.AuditLogAction.channel_create, limit=1):
+                if entry.target.id == channel.id and (now - entry.created_at).total_seconds() < 15:
+                    moderator = entry.user
+                    break
+        except Exception:
+            pass
         embed = create_prestige_embed(
             title="📁 Kanal erstellt",
             description=f"> **Kanal:** {channel.name}\n"
@@ -1702,10 +1710,14 @@ async def on_guild_channel_delete(channel):
     log_channel = discord.utils.get(channel.guild.text_channels, name="⚙️│system-logs")
     if log_channel:
         moderator = None
-        async for entry in channel.guild.audit_logs(action=discord.AuditLogAction.channel_delete, limit=1):
-            if entry.target.id == channel.id:
-                moderator = entry.user
-                break
+        try:
+            now = discord.utils.utcnow()
+            async for entry in channel.guild.audit_logs(action=discord.AuditLogAction.channel_delete, limit=1):
+                if entry.target.id == channel.id and (now - entry.created_at).total_seconds() < 15:
+                    moderator = entry.user
+                    break
+        except Exception:
+            pass
         embed = create_prestige_embed(
             title="🛑 Kanal gelöscht",
             description=f"> **Kanal:** {channel.name}\n"
@@ -1722,10 +1734,14 @@ async def on_guild_role_create(role):
     log_channel = discord.utils.get(role.guild.text_channels, name="⚙️│system-logs")
     if log_channel:
         moderator = None
-        async for entry in role.guild.audit_logs(action=discord.AuditLogAction.role_create, limit=1):
-            if entry.target.id == role.id:
-                moderator = entry.user
-                break
+        try:
+            now = discord.utils.utcnow()
+            async for entry in role.guild.audit_logs(action=discord.AuditLogAction.role_create, limit=1):
+                if entry.target.id == role.id and (now - entry.created_at).total_seconds() < 15:
+                    moderator = entry.user
+                    break
+        except Exception:
+            pass
         embed = create_prestige_embed(
             title="👑 Rolle erstellt",
             description=f"> **Rolle:** {role.mention} ({role.name})\n"
@@ -1742,10 +1758,14 @@ async def on_guild_role_delete(role):
     log_channel = discord.utils.get(role.guild.text_channels, name="⚙️│system-logs")
     if log_channel:
         moderator = None
-        async for entry in role.guild.audit_logs(action=discord.AuditLogAction.role_delete, limit=1):
-            if entry.target.id == role.id:
-                moderator = entry.user
-                break
+        try:
+            now = discord.utils.utcnow()
+            async for entry in role.guild.audit_logs(action=discord.AuditLogAction.role_delete, limit=1):
+                if entry.target.id == role.id and (now - entry.created_at).total_seconds() < 15:
+                    moderator = entry.user
+                    break
+        except Exception:
+            pass
         embed = create_prestige_embed(
             title="🛑 Rolle gelöscht",
             description=f"> **Rolle:** {role.name}\n"
@@ -1895,8 +1915,9 @@ async def on_member_remove(member):
     reason = "Kein Grund angegeben"
 
     try:
+        now = discord.utils.utcnow()
         async for entry in guild.audit_logs(action=discord.AuditLogAction.kick, limit=1):
-            if entry.target.id == member.id:
+            if entry.target.id == member.id and (now - entry.created_at).total_seconds() < 15:
                 kicked_by = entry.user
                 reason = entry.reason if entry.reason else "Kein Grund angegeben"
                 break
@@ -1939,8 +1960,9 @@ async def on_member_ban(guild, user):
     reason = "Kein Grund angegeben"
 
     try:
+        now = discord.utils.utcnow()
         async for entry in guild.audit_logs(action=discord.AuditLogAction.ban, limit=1):
-            if entry.target.id == user.id:
+            if entry.target.id == user.id and (now - entry.created_at).total_seconds() < 15:
                 banned_by = entry.user
                 reason = entry.reason if entry.reason else "Kein Grund angegeben"
                 break
@@ -2034,10 +2056,6 @@ if __name__ == "__main__":
         # Flask Webserver für 24/7 online halten auf Railway starten
         keep_alive()
         
-        # Starte den Stats-Update-Loop
-        if not update_stats_task.is_running():
-            update_stats_task.start()
-            
         try:
             bot.run(TOKEN)
         except discord.errors.LoginFailure:
