@@ -1,2832 +1,1169 @@
-import os
-import asyncio
-import logging
-import io
-import threading
-import json
-import random
-import aiohttp
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+🛍️ VOID_SHOP v1.0 – ALL-IN-ONE
+RealVexo696 / Void_Shop
+Companion to VOID-TOOLS v2.6 by V0id-v2
+
+ALL 7 FEATURES IN ONE FILE:
+1. 🛍️ Auto-Delivery      (!checkbuy → <5s DM)
+2. 🔐 Bio-Code-Auth      (!verify → void-8392)
+3. 🚨 AntiScam Shield    (Link-Filter <200ms)
+4. 📈 FOMO Live Ticker   (#live-käufe)
+5. 🪙 Void-Coins Economy (!coins !shop !redeem)
+6. 👑 Web Dashboard      (http://localhost:5000)
+7. 📜 LOGSYSTEM 2.0      (12 dedizierte Kanäle)
+
+Python 3.11+ · discord.py 2.3.2 · Flask 3.0.3 · aiosqlite
+AGPL-3.0
+
+Run:
+  pip install discord.py aiohttp aiosqlite Flask python-dotenv
+  python void_shop_all_in_one.py
+"""
 import discord
-from discord.ext import commands, tasks
-from discord.ui import Button, View, Modal, TextInput
-from flask import Flask
+from discord.ext import commands
+import aiohttp
+import aiosqlite
+import asyncio
+import sqlite3
+import json
+import os
+import sys
+import random
+import re
+import datetime
+import time
+import threading
+from urllib.parse import urlparse
 
-# --- DATABASE (PERSISTENTE DATEN SPEICHERUNG) ---
+# =====================================================================
+#  🛠️  CONFIG – HIER BEARBEITEN
+# =====================================================================
 
-class Database:
-    def __init__(self, filename="shop_db.json"):
-        self.filename = filename
-        self.lock = threading.Lock()
-        self.data = {
-            "coins": {"12345678": 250, "87654321": 450},
-            "revenue_robux": 14500,
-            "revenue_euro": 145.0,
-            "supporter_leaderboard": {
-                "Vexo_Admin": {"claims": 18, "reviews": 12, "stars": 58},
-                "Lukas_Support": {"claims": 14, "reviews": 9, "stars": 44}
-            },
-            "recent_purchases": [
-                {"user": "Maximilian", "product": "Prestige FastFlags v2", "time": "12:45"},
-                {"user": "Sven_Roblox", "product": "T-Shirt Template Pack", "time": "11:20"}
-            ],
-            "scam_blocked": 23,
-            "live_logs": {
-                "voice": ["[12:30:15] Voice System Online"],
-                "ban_kick": ["[12:30:15] Ban & Kick Monitor Aktiv"],
-                "message": ["[12:30:15] Message Tracker Online"],
-                "invite": ["[12:30:15] Invite Tracker Geladen"],
-                "join_leave": ["[12:30:15] Join/Leave Scanner Online"],
-                "ticket": ["[12:30:15] Ticket Engine Aktiv"],
-                "system": ["[12:30:15] System Logger Bereit"],
-                "security": ["[12:30:15] Anti-Scam Phishing Schild Bereit"],
-                "verify": ["[12:30:15] Bio-Code Auth Engine Aktiv"],
-                "custom": ["[12:30:15] Prestige Bot Modules Geladen"]
-            }
-        }
-        self.load()
-
-    def load(self):
-        if os.path.exists(self.filename):
-            try:
-                with open(self.filename, "r", encoding="utf-8") as f:
-                    saved = json.load(f)
-                    self.data.update(saved)
-                    if "live_logs" not in self.data:
-                        self.data["live_logs"] = {k: [f"[Sys] Monitor {k} bereit"] for k in ["voice", "ban_kick", "message", "invite", "join_leave", "ticket", "system", "security", "verify", "custom"]}
-            except Exception:
-                pass
-
-    def save(self):
-        with self.lock:
-            try:
-                with open(self.filename, "w", encoding="utf-8") as f:
-                    json.dump(self.data, f, indent=2, ensure_ascii=False)
-            except Exception:
-                pass
-
-    def add_log(self, cat, text):
-        t_str = discord.utils.utcnow().strftime("%H:%M:%S")
-        entry = f"[{t_str}] {text}"
-        with self.lock:
-            if "live_logs" not in self.data: self.data["live_logs"] = {}
-            if cat not in self.data["live_logs"]: self.data["live_logs"][cat] = []
-            self.data["live_logs"][cat].insert(0, entry)
-            self.data["live_logs"][cat] = self.data["live_logs"][cat][:50]
-
-    def get_coins(self, user_id):
-        return self.data["coins"].get(str(user_id), 0)
-
-    def add_coins(self, user_id, amount):
-        uid = str(user_id)
-        self.data["coins"][uid] = self.data["coins"].get(uid, 0) + amount
-        self.save()
-
-    def add_purchase(self, username, product, robux_price):
-        self.data["revenue_robux"] += robux_price
-        self.data["revenue_euro"] += round(robux_price * 0.01, 2)
-        time_str = discord.utils.utcnow().strftime("%H:%M")
-        self.data["recent_purchases"].insert(0, {"user": username, "product": product, "time": time_str})
-        self.data["recent_purchases"] = self.data["recent_purchases"][:15]
-        self.add_log("custom", f"Kauf absolviert: {username} kaufte {product} ({robux_price} R$)")
-        self.save()
-
-    def add_supporter_claim(self, username):
-        if username not in self.data["supporter_leaderboard"]:
-            self.data["supporter_leaderboard"][username] = {"claims": 0, "reviews": 0, "stars": 0}
-        self.data["supporter_leaderboard"][username]["claims"] += 1
-        self.add_log("ticket", f"Supporter {username} übernahm ein Ticket")
-        self.save()
-
-    def add_supporter_review(self, username, stars_count):
-        if username not in self.data["supporter_leaderboard"]:
-            self.data["supporter_leaderboard"][username] = {"claims": 0, "reviews": 0, "stars": 0}
-        self.data["supporter_leaderboard"][username]["reviews"] += 1
-        self.data["supporter_leaderboard"][username]["stars"] += stars_count
-        self.add_log("custom", f"Kunden-Rezension: ⭐{stars_count} Sterne hinterlassen")
-        self.save()
-
-    def add_scam_block(self):
-        self.data["scam_blocked"] += 1
-        self.save()
-
-    def get_dashboard_data(self, bot_client):
-        tot_m = 0
-        on_m = 0
-        bst = 0
-        op_tix = 0
-        v_cnt = 0
-        tix_list = []
-        ping = round(bot_client.latency * 1000) if bot_client and bot_client.latency else 18
-
-        if bot_client:
-            for g in bot_client.guilds:
-                tot_m += len(g.members)
-                bst += g.premium_subscription_count
-                for m in g.members:
-                    if m.status != discord.Status.offline: on_m += 1
-                    if any("Verified" in r.name or "𝗩𝗲𝗿𝗶𝗳𝗶𝗲𝗱" in r.name for r in m.roles): v_cnt += 1
-                for c in g.text_channels:
-                    if any(x in c.name.lower() for x in ["kauf-", "support-", "partner-"]) or (c.topic and "von" in c.topic):
-                        op_tix += 1
-                        tix_list.append({"name": c.name, "topic": c.topic or "Support"})
-
-        with self.lock:
-            dc = dict(self.data)
-            dc["live_discord"] = {
-                "total_members": tot_m,
-                "online_members": on_m,
-                "boosters": bst,
-                "open_tickets": op_tix,
-                "verified_members": v_cnt,
-                "ping_ms": ping,
-                "tickets_list": tix_list
-            }
-            return dc
-
-db = Database()
-
-
-# --- FLASK SERVER & WEB DASHBOARD ---
-
-app = Flask('')
-
-DASHBOARD_HTML = """<!DOCTYPE html>
-<html lang="de">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 • Cloud Executive Center</title>
-  <style>
-    :root {
-      --bg: #0a0b10;
-      --panel: rgba(16, 18, 28, 0.85);
-      --cyan: #00f0ff;
-      --pink: #ff007f;
-      --green: #39ff14;
-      --gold: #ffd700;
-      --text: #f0f4f8;
-      --border: rgba(0, 240, 255, 0.22);
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Roboto, sans-serif; }
-    body { background: var(--bg); color: var(--text); padding: 1.5rem; min-height: 100vh; background-image: radial-gradient(circle at 10% 10%, rgba(0,240,255,0.06) 0%, transparent 40%), radial-gradient(circle at 90% 90%, rgba(255,0,127,0.06) 0%, transparent 40%); }
-    header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--border); padding-bottom: 1.2rem; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem; }
-    h1 { font-size: 2rem; letter-spacing: 2px; text-transform: uppercase; background: linear-gradient(90deg, var(--cyan), var(--pink)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; text-shadow: 0 0 20px rgba(0,240,255,0.4); }
-    .status-badge { display: inline-flex; align-items: center; gap: 8px; background: rgba(57,255,20,0.12); border: 1px solid var(--green); padding: 8px 18px; border-radius: 30px; font-weight: bold; color: var(--green); box-shadow: 0 0 15px rgba(57,255,20,0.3); font-size: 0.85rem; }
-    .status-dot { width: 10px; height: 10px; background: var(--green); border-radius: 50%; animation: pulse 1.5s infinite; }
-    @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.3; transform: scale(1.3); } 100% { opacity: 1; transform: scale(1); } }
-    .tabs { display: flex; gap: 10px; margin-bottom: 2rem; flex-wrap: wrap; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 15px; }
-    .tab-btn { background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: #a0aec0; padding: 10px 20px; border-radius: 10px; cursor: pointer; font-weight: 600; transition: all 0.3s; font-size: 0.95rem; display: flex; align-items: center; gap: 8px; }
-    .tab-btn:hover, .tab-btn.active { background: rgba(0,240,255,0.15); border-color: var(--cyan); color: #fff; box-shadow: 0 0 15px rgba(0,240,255,0.3); }
-    .tab-content { display: none; animation: fadeIn 0.4s ease; }
-    .tab-content.active { display: block; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
-    .card { background: var(--panel); backdrop-filter: blur(12px); border: 1px solid var(--border); border-radius: 16px; padding: 1.6rem; position: relative; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
-    .card::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 3px; background: linear-gradient(90deg, var(--cyan), var(--pink)); }
-    .card-title { font-size: 0.85rem; text-transform: uppercase; color: #a0aec0; letter-spacing: 1px; margin-bottom: 0.6rem; font-weight: 600; }
-    .card-value { font-size: 2.2rem; font-weight: 800; color: #fff; }
-    .val-cyan { color: var(--cyan); } .val-green { color: var(--green); } .val-pink { color: var(--pink); } .val-gold { color: var(--gold); }
-    .section-title { font-size: 1.3rem; margin-bottom: 1rem; color: var(--gold); font-weight: 700; display: flex; align-items: center; gap: 10px; }
-    .table-container { background: var(--panel); backdrop-filter: blur(12px); border: 1px solid var(--border); border-radius: 16px; padding: 1.4rem; overflow-x: auto; margin-bottom: 2rem; }
-    table { width: 100%; border-collapse: collapse; text-align: left; }
-    th { padding: 12px 14px; border-bottom: 1px solid var(--border); color: var(--cyan); font-weight: 600; text-transform: uppercase; font-size: 0.8rem; letter-spacing: 1px; }
-    td { padding: 14px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.95rem; }
-    tr:hover td { background: rgba(0,240,255,0.04); }
-    .tag { background: rgba(0,240,255,0.15); border: 1px solid var(--cyan); padding: 4px 10px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; }
-    .split-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 1.8rem; }
-    @media(max-width: 900px) { .split-grid { grid-template-columns: 1fr; } }
-    .log-nav { display: flex; gap: 8px; margin-bottom: 1.2rem; flex-wrap: wrap; }
-    .log-btn { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); color: #cbd5e0; padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 0.85rem; font-weight: 600; }
-    .log-btn.active { background: var(--cyan); color: #000; font-weight: bold; }
-    .log-box { background: #050608; border: 1px solid var(--border); border-radius: 12px; padding: 1.2rem; font-family: 'Consolas', monospace; font-size: 0.9rem; height: 420px; overflow-y: auto; line-height: 1.6; color: #a0aec0; }
-    .log-entry { margin-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.03); padding-bottom: 4px; }
-    .ticket-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(0,240,255,0.3); padding: 12px 16px; border-radius: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>👑 𝗩𝗢𝗜𝗗 • Cloud Executive Center</h1>
-    <div class="status-badge"><div class="status-dot"></div> DISCORD & RAILWAY LIVE API</div>
-  </header>
-
-  <div class="tabs">
-    <div class="tab-btn active" onclick="switchTab('overview', this)">📊 Übersicht</div>
-    <div class="tab-btn" onclick="switchTab('logs', this)">📁 8-faches Log-Center</div>
-    <div class="tab-btn" onclick="switchTab('tickets', this)">🎟️ Tickets & Verify Auth</div>
-    <div class="tab-btn" onclick="switchTab('economy', this)">🪙 Void-Coins & Leaderboard</div>
-    <div class="tab-btn" onclick="switchTab('health', this)">⚡ Cloud System Health</div>
-  </div>
-
-  <!-- TAB 1: OVERVIEW -->
-  <div id="tab-overview" class="tab-content active">
-    <div class="grid">
-      <div class="card">
-        <div class="card-title">💰 Gesamtumsatz (Monat)</div>
-        <div class="card-value val-cyan" id="rev-robux">14.500 R$</div>
-        <div style="color:#a0aec0; margin-top:6px; font-size:0.9rem;" id="rev-euro">≈ 145,00 €</div>
-      </div>
-      <div class="card">
-        <div class="card-title">👥 Server Mitglieder (Live)</div>
-        <div class="card-value val-green" id="stat-mem">0</div>
-        <div style="color:#a0aec0; margin-top:6px; font-size:0.9rem;"><span id="stat-on">0</span> Online / Idle</div>
-      </div>
-      <div class="card">
-        <div class="card-title">🎟️ Aktive Tickets</div>
-        <div class="card-value val-gold" id="stat-tix">0</div>
-        <div style="color:#a0aec0; margin-top:6px; font-size:0.9rem;">Multi-Kategorie Panel</div>
-      </div>
-      <div class="card">
-        <div class="card-title">🚨 Anti-Scam Phishing Block</div>
-        <div class="card-value val-pink" id="scam-cnt">23</div>
-        <div style="color:#a0aec0; margin-top:6px; font-size:0.9rem;">Schutzschild 100% Aktiv</div>
-      </div>
-    </div>
-
-    <div class="split-grid">
-      <div>
-        <div class="section-title">🏆 Supporter & Team Leaderboard</div>
-        <div class="table-container">
-          <table>
-            <thead><tr><th>Mitarbeiter</th><th>Claims</th><th>Kundenrezensionen</th><th>Schnitt</th></tr></thead>
-            <tbody id="leaderboard-body"></tbody>
-          </table>
-        </div>
-      </div>
-      <div>
-        <div class="section-title">🛍️ Letzte Verkäufe</div>
-        <div class="table-container" id="purchases-feed" style="max-height: 380px; overflow-y: auto;"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- TAB 2: LOGS -->
-  <div id="tab-logs" class="tab-content">
-    <div class="section-title">📁 Live Server-Ereignis Protokolle</div>
-    <div class="log-nav">
-      <div class="log-btn active" onclick="switchLog('voice', this)">💬 Voice Logs</div>
-      <div class="log-btn" onclick="switchLog('ban_kick', this)">🔨 Ban & Kick</div>
-      <div class="log-btn" onclick="switchLog('message', this)">📝 Message Logs</div>
-      <div class="log-btn" onclick="switchLog('invite', this)">📩 Invite Tracking</div>
-      <div class="log-btn" onclick="switchLog('join_leave', this)">📥 Join & Leave</div>
-      <div class="log-btn" onclick="switchLog('ticket', this)">💾 Ticket Transkripte</div>
-      <div class="log-btn" onclick="switchLog('system', this)">⚙️ System & Rollen</div>
-      <div class="log-btn" onclick="switchLog('security', this)">🚨 Security & Anti-Scam</div>
-      <div class="log-btn" onclick="switchLog('verify', this)">🔐 Bio-Verify Auth</div>
-      <div class="log-btn" onclick="switchLog('custom', this)">✨ Prestige Custom</div>
-    </div>
-    <div class="log-box" id="log-display-box">Lade Echtzeit-Protokolle...</div>
-  </div>
-
-  <!-- TAB 3: TICKETS & VERIFY -->
-  <div id="tab-tickets" class="tab-content">
-    <div class="grid">
-      <div class="card">
-        <div class="card-title">🔐 Verifizierte Kunden</div>
-        <div class="card-value val-cyan" id="stat-ver">0</div>
-        <div style="color:#a0aec0; margin-top:6px; font-size:0.9rem;">Erfolgreich freigeschaltet</div>
-      </div>
-      <div class="card">
-        <div class="card-title">💎 Server Booster</div>
-        <div class="card-value val-pink" id="stat-bst">0</div>
-        <div style="color:#a0aec0; margin-top:6px; font-size:0.9rem;">Lounge Zugriff aktiv</div>
-      </div>
-    </div>
-    <div class="section-title">🎟️ Live Aktive Support- & Kaufkanäle</div>
-    <div class="table-container" id="tickets-list-container">Keine offenen Tickets vorhanden.</div>
-  </div>
-
-  <!-- TAB 4: ECONOMY -->
-  <div id="tab-economy" class="tab-content">
-    <div class="section-title">🪙 Void-Coins & Treuepunkte Leaderboard</div>
-    <div class="table-container">
-      <table>
-        <thead><tr><th>Platz</th><th>Discord User-ID</th><th>Kontostand (Void-Coins)</th><th>Rang</th></tr></thead>
-        <tbody id="economy-body"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- TAB 5: HEALTH -->
-  <div id="tab-health" class="tab-content">
-    <div class="grid">
-      <div class="card"><div class="card-title">⚡ API Latency (Ping)</div><div class="card-value val-green" id="health-ping">22 ms</div></div>
-      <div class="card"><div class="card-title">💾 Memory Uptime</div><div class="card-value val-cyan">99.9%</div></div>
-      <div class="card"><div class="card-title">☁️ Cloud Provider</div><div class="card-value val-pink">Railway</div></div>
-    </div>
-  </div>
-
-  <script>
-    let currentLogCat = 'voice';
-    let globalStatsData = null;
-
-    function switchTab(t, btn) {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById('tab-' + t).classList.add('active');
-    }
-
-    function switchLog(cat, btn) {
-      document.querySelectorAll('.log-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      currentLogCat = cat;
-      renderLogs();
-    }
-
-    function renderLogs() {
-      const box = document.getElementById('log-display-box');
-      if (!globalStatsData || !globalStatsData.live_logs || !globalStatsData.live_logs[currentLogCat]) {
-        box.innerHTML = 'Keine Einträge für diese Kategorie vorhanden.';
-        return;
-      }
-      box.innerHTML = globalStatsData.live_logs[currentLogCat].map(l => `<div class="log-entry">${l}</div>`).join('');
-    }
-
-    async function updateDashboard() {
-      try {
-        const res = await fetch('/api/stats');
-        const data = await res.json();
-        globalStatsData = data;
-
-        document.getElementById('rev-robux').innerText = data.revenue_robux.toLocaleString() + ' R$';
-        document.getElementById('rev-euro').innerText = '≈ ' + data.revenue_euro.toFixed(2).replace('.', ',') + ' €';
-        document.getElementById('scam-cnt').innerText = data.scam_blocked;
-
-        if (data.live_discord) {
-          document.getElementById('stat-mem').innerText = data.live_discord.total_members;
-          document.getElementById('stat-on').innerText = data.live_discord.online_members;
-          document.getElementById('stat-tix').innerText = data.live_discord.open_tickets;
-          document.getElementById('stat-ver').innerText = data.live_discord.verified_members;
-          document.getElementById('stat-bst').innerText = data.live_discord.boosters;
-          document.getElementById('health-ping').innerText = data.live_discord.ping_ms + ' ms';
-
-          const tc = document.getElementById('tickets-list-container');
-          if (data.live_discord.tickets_list && data.live_discord.tickets_list.length > 0) {
-            tc.innerHTML = data.live_discord.tickets_list.map(t => `<div class="ticket-card"><span style="color:#fff; font-weight:bold;"># ${t.name}</span><span class="tag">${t.topic}</span></div>`).join('');
-          } else {
-            tc.innerHTML = '<p style="color:#a0aec0;">Aktuell sind keine Support-Tickets geöffnet.</p>';
-          }
-        }
-
-        const lb = document.getElementById('leaderboard-body');
-        lb.innerHTML = '';
-        for (const [name, s] of Object.entries(data.supporter_leaderboard)) {
-          const avg = s.reviews > 0 ? (s.stars / s.reviews).toFixed(1) : '5.0';
-          lb.innerHTML += `<tr><td><span class="tag">👑 ${name}</span></td><td><strong>${s.claims}</strong></td><td>${s.reviews} Vouches</td><td style="color:var(--gold); font-weight:bold;">⭐ ${avg}</td></tr>`;
-        }
-
-        const pf = document.getElementById('purchases-feed');
-        pf.innerHTML = '';
-        data.recent_purchases.forEach(p => {
-          pf.innerHTML += `<div style="padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.06); display:flex; justify-content:space-between;"><span style="color:#fff;">${p.user}<br><small style="color:var(--cyan);">${p.product}</small></span><span style="color:#718096;">${p.time}</span></div>`;
-        });
-
-        const eb = document.getElementById('economy-body');
-        eb.innerHTML = '';
-        let place = 1;
-        const sortedCoins = Object.entries(data.coins).sort((a,b) => b[1] - a[1]);
-        sortedCoins.forEach(([uid, coins]) => {
-          eb.innerHTML += `<tr><td><strong>#${place++}</strong></td><td style="color:var(--cyan);">${uid}</td><td style="color:var(--gold); font-weight:bold;">🪙 ${coins} Coins</td><td>VIP Kunde</td></tr>`;
-        });
-
-        renderLogs();
-      } catch(e) {}
-    }
-    updateDashboard();
-    setInterval(updateDashboard, 5000);
-  </script>
-</body>
-</html>"""
-
-@app.route('/')
-def home():
-    return DASHBOARD_HTML
-
-@app.route('/api/stats')
-def api_stats():
-    return db.get_dashboard_data(bot)
-
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = threading.Thread(target=run_flask)
-    t.start()
-    print("[Flask] Webserver gestartet.")
-
-
-# --- CONFIG LOGGER ---
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s')
-logger = logging.getLogger('void_shop_bot')
-
-# ==============================================================================
-#                                KONFIGURATION
-# ==============================================================================
-# Liest den Bot-Token aus den Railway Secrets (DISCORD_TOKEN, TOKEN oder BOT_TOKEN).
-# Alternativ kannst du den Token auch als String unten zwischen den Anführungszeichen eintragen.
-TOKEN = os.environ.get("DISCORD_TOKEN") or os.environ.get("TOKEN") or os.environ.get("BOT_TOKEN") or ""
-
-# Der Prefix für deine Befehle (Standard ist !)
+TOKEN = os.getenv("DISCORD_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
+GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
+OWNER_ID = int(os.getenv("OWNER_ID", "0") or 0)
 PREFIX = "!"
-# ==============================================================================
 
+# --- 12 LOG KANÄLE ---
+LOG_JOIN      = int(os.getenv("LOG_JOIN", "0") or 0)      # 📥 join-leave
+LOG_VOICE     = int(os.getenv("LOG_VOICE", "0") or 0)     # 🎙️ voice
+LOG_MESSAGE   = int(os.getenv("LOG_MESSAGE", "0") or 0)   # 💬 message
+LOG_SHOP      = int(os.getenv("LOG_SHOP", "0") or 0)      # 🛍️ shop
+LOG_VERIFY    = int(os.getenv("LOG_VERIFY", "0") or 0)    # 🔐 verify
+LOG_ANTISCAM  = int(os.getenv("LOG_ANTISCAM", "0") or 0)  # 🚨 antiscam
+LOG_TICKET    = int(os.getenv("LOG_TICKET", "0") or 0)    # 🎫 ticket
+LOG_COINS     = int(os.getenv("LOG_COINS", "0") or 0)     # 🪙 coins
+LOG_MOD       = int(os.getenv("LOG_MOD", "0") or 0)       # ⚙️ mod
+LOG_TICKER    = int(os.getenv("LOG_TICKER", "0") or 0)    # 📈 ticker / live-käufe
+LOG_BOT       = int(os.getenv("LOG_BOT", "0") or 0)       # 🔧 bot
+LOG_OWNER     = int(os.getenv("LOG_OWNER", "0") or 0)     # 👑 owner
 
-# --- GLOBAL EMBED FACTORY ---
+LOG_CHANNELS = {
+    "join": LOG_JOIN, "voice": LOG_VOICE, "message": LOG_MESSAGE,
+    "shop": LOG_SHOP, "verify": LOG_VERIFY, "antiscam": LOG_ANTISCAM,
+    "ticket": LOG_TICKET, "coins": LOG_COINS, "mod": LOG_MOD,
+    "ticker": LOG_TICKER, "bot": LOG_BOT, "owner": LOG_OWNER,
+}
 
-def create_prestige_embed(title: str, description: str, color: int, author_user: discord.User = None, bot_user: discord.ClientUser = None):
-    """
-    Erstellt ein hochgradig einheitliches, luxuriöses Embed:
-    - Author: Immer der ausführende User (Name + Avatar-Icon)
-    - Footer: Immer Bot-Icon + "Powered by BotForge" + Zeitstempel
-    """
-    embed = discord.Embed(
-        title=title,
-        description=description,
-        color=color,
-        timestamp=discord.utils.utcnow()
-    )
-    if author_user:
-        embed.set_author(
-            name=author_user.name, 
-            icon_url=author_user.display_avatar.url if author_user.display_avatar else None
-        )
-    if bot_user:
-        embed.set_footer(
-            text="Powered by BotForge", 
-            icon_url=bot_user.display_avatar.url if bot_user.display_avatar else None
-        )
-    return embed
+TICKER_CHANNEL_ID = LOG_TICKER  # FOMO Kanal = ticker log
 
+# Rollen (optional)
+ROLE_VERIFIED  = 0
+ROLE_CUSTOMER  = 0
+ROLE_STAFF     = 0
+ROLE_VIP       = 0
 
-# --- ROBLOX API HELPERS ---
+# Roblox
+ROBLOX_COOKIE = os.getenv("ROBLOX_COOKIE", "")  # optional .ROBLOSECURITY
 
-async def get_roblox_user(username: str):
-    """Sucht einen Roblox-User und gibt ID, Display-Name und System-Name zurück."""
-    url = f"https://users.roblox.com/v1/users/search?keyword={username}&limit=1"
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    if data.get("data"):
-                        user_data = data["data"][0]
-                        return user_data["id"], user_data["displayName"], user_data["name"]
-        except Exception as e:
-            logger.error(f"Roblox User API Fehler: {e}")
-    return None, None, None
+# Dashboard
+DASHBOARD_ENABLED = True
+DASHBOARD_HOST = "0.0.0.0"
+DASHBOARD_PORT = 5000
+DASHBOARD_SECRET = "voidshop-secret-change-me"
+DASHBOARD_LOGIN_CODE = "voidshop"  # oder str(OWNER_ID)
 
-async def get_roblox_avatar(user_id: int):
-    """Sucht den Kopfschuss-Avatar eines Roblox-Users."""
-    url = f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=150x150&format=Png&isCircular=false"
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    if data.get("data"):
-                        return data["data"][0]["imageUrl"]
-        except Exception as e:
-            logger.error(f"Roblox Avatar API Fehler: {e}")
+# Datenbank
+DATABASE_PATH = "void_shop.db"
+
+# =====================================================================
+#  🛍️  PRODUKTE – AUTO-DELIVERY
+# =====================================================================
+PRODUCTS = {
+    "fastflags_premium": {
+        "name": "Premium FastFlags Paket",
+        "gamepass_id": 12345678,
+        "robux_price": 250,
+        "deliver": {
+            "title": "🎉 Danke für deinen Kauf – Premium FastFlags",
+            "message": "Hier ist dein **Premium FastFlags Paket** – sofortige Lieferung!\n\n📎 Download:\n• FastFlags JSON\n• Anleitung PDF\n• T-Shirt Vorlage\n\nSupport: https://discord.gg/voidv2\nDanke, dass du Void_Shop vertraust! <3",
+            "files": [
+                "https://cdn.void-shop.local/fastflags/premium.json",
+                "https://cdn.void-shop.local/fastflags/README.pdf"
+            ]
+        },
+        "coins_reward": 50,
+        "role_give": "CUSTOMER"
+    },
+    "tshirt_template_pro": {
+        "name": "T-Shirt Template Pro",
+        "gamepass_id": 12345679,
+        "robux_price": 120,
+        "deliver": {
+            "title": "👕 T-Shirt Template Pro",
+            "message": "Dein **T-Shirt Template Pro** Paket!\n\nEnthalten:\n• 12x PSD Vorlagen\n• 30x PNG Overlays\n• Roblox Upload Guide\n\nViel Spaß beim Designen!",
+            "files": ["https://cdn.void-shop.local/tshirt/pro_pack.zip"]
+        },
+        "coins_reward": 50,
+        "role_give": "CUSTOMER"
+    },
+    "fastflags_ultra": {
+        "name": "FastFlags Ultra",
+        "gamepass_id": 12345680,
+        "robux_price": 499,
+        "deliver": {
+            "title": "⚡ FastFlags Ultra – Danke!",
+            "message": "Ultra Paket freigeschaltet!\n\n• Ultra FastFlags\n• FPS Booster\n• Private Discord VIP Zugang\n\nLink läuft 72h.",
+            "files": ["https://cdn.void-shop.local/fastflags/ultra.zip"]
+        },
+        "coins_reward": 50,
+        "role_give": "VIP"
+    },
+    "starter_bundle": {
+        "name": "Starter Bundle",
+        "gamepass_id": 12345681,
+        "robux_price": 75,
+        "deliver": {
+            "title": "📦 Starter Bundle",
+            "message": "Danke für deinen ersten Kauf!\n\nDein Download: https://cdn.void-shop.local/starter/bundle.zip\n\n+50 Void-Coins wurden gutgeschrieben!"
+        },
+        "coins_reward": 50,
+        "role_give": "CUSTOMER"
+    }
+}
+
+# =====================================================================
+#  🪙  COIN ECONOMY
+# =====================================================================
+COIN_REWARDS = {
+    "verify": 10,
+    "invite": 25,
+    "purchase": 50,
+    "vouch_5star": 30,
+    "daily": 5,
+}
+SHOP_REWARDS = {
+    150: {"name": "15% Rabatt-Code", "type": "discount"},
+    300: {"name": "Gratis T-Shirt Template", "type": "product"},
+    500: {"name": "VIP Role 30 Tage", "type": "role"},
+    800: {"name": "Premium FastFlags Paket", "type": "product"},
+}
+
+# =====================================================================
+#  🚨  ANTISCAM WHITELIST
+# =====================================================================
+SAFE_DOMAINS = [
+    "roblox.com", "www.roblox.com", "web.roblox.com",
+    "discord.com", "discord.gg", "discordapp.com", "cdn.discordapp.com",
+    "youtube.com", "youtu.be", "www.youtube.com",
+    "github.com", "t.me", "voidtool", "voidv2",
+    "twitter.com", "x.com", "twitch.tv", "tiktok.com",
+    "paypal.com", "stripe.com",
+]
+SUSPICIOUS_KEYWORDS = [
+    "roblóx", "rob1ox", "r0blox", "roblox-free", "free-robux",
+    "dlscord", "discorde", "disord", "discord-nitro",
+    "steamcommunity-n", "steancommunity", "free-nitro", "nitro-free"
+]
+
+# =====================================================================
+#  🗄️  DATABASE
+# =====================================================================
+DB_SCHEMA = """
+PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS users(
+  discord_id INTEGER PRIMARY KEY,
+  roblox_id INTEGER,
+  roblox_name TEXT,
+  verified INTEGER DEFAULT 0,
+  coins INTEGER DEFAULT 0,
+  total_spent_robux INTEGER DEFAULT 0,
+  purchases INTEGER DEFAULT 0,
+  joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  verified_at TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS verify_codes(
+  discord_id INTEGER PRIMARY KEY,
+  roblox_id INTEGER,
+  roblox_name TEXT,
+  code TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS purchases(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  discord_id INTEGER,
+  roblox_id INTEGER,
+  product_key TEXT,
+  gamepass_id INTEGER,
+  robux_price INTEGER,
+  delivered INTEGER DEFAULT 0,
+  delivery_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS deliveries(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  purchase_id INTEGER,
+  discord_id INTEGER,
+  product_key TEXT,
+  delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  dm_message_id TEXT,
+  success INTEGER DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS coins_ledger(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  discord_id INTEGER,
+  amount INTEGER,
+  reason TEXT,
+  meta TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS invites(
+  inviter_id INTEGER,
+  invited_id INTEGER PRIMARY KEY,
+  joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  rewarded INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS staff_stats(
+  staff_id INTEGER PRIMARY KEY,
+  tickets_claimed INTEGER DEFAULT 0,
+  tickets_closed INTEGER DEFAULT 0,
+  avg_response_sec INTEGER DEFAULT 0,
+  rating_sum INTEGER DEFAULT 0,
+  rating_count INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS antiscam_hits(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  discord_id INTEGER,
+  channel_id INTEGER,
+  url TEXT,
+  reason TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS logs(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  log_type TEXT,
+  discord_id INTEGER,
+  channel_id INTEGER,
+  content TEXT,
+  meta TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS vouches(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  discord_id INTEGER,
+  stars INTEGER,
+  message TEXT,
+  coins_awarded INTEGER DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS revenue_daily(
+  day TEXT PRIMARY KEY,
+  robux INTEGER DEFAULT 0,
+  purchases INTEGER DEFAULT 0,
+  customers INTEGER DEFAULT 0
+);
+"""
+
+async def init_db():
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.executescript(DB_SCHEMA)
+        await db.commit()
+
+# =====================================================================
+#  🌐  ROBLOX API
+# =====================================================================
+_session: aiohttp.ClientSession | None = None
+async def get_session():
+    global _session
+    if _session is None or _session.closed:
+        _session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
+    return _session
+
+async def roblox_username_to_id(username: str):
+    s = await get_session()
+    try:
+        async with s.post("https://users.roblox.com/v1/usernames/users",
+            json={"usernames":[username],"excludeBannedUsers":True}) as r:
+            j = await r.json()
+            data = j.get("data", [])
+            if data:
+                u = data[0]
+                return u["id"], u.get("displayName", u["name"])
+    except Exception: pass
     return None
 
-async def check_roblox_ownership(user_id: int, gamepass_id: int):
-    """Prüft live über die Roblox API, ob ein User einen bestimmten Gamepass besitzt."""
-    url = f"https://inventory.roblox.com/v1/users/{user_id}/items/GamePass/{gamepass_id}/is-owned"
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url) as r:
-                if r.status == 200:
-                    text = await r.text()
-                    return text.strip().lower() == "true"
-        except Exception as e:
-            logger.error(f"Roblox Ownership API Fehler: {e}")
+async def roblox_get_description(user_id: int) -> str:
+    s = await get_session()
+    try:
+        async with s.get(f"https://users.roblox.com/v1/users/{user_id}") as r:
+            if r.status == 200:
+                j = await r.json()
+                return j.get("description","") or ""
+    except Exception: pass
+    return ""
+
+async def roblox_owns_gamepass(roblox_id: int, gamepass_id: int) -> bool:
+    s = await get_session()
+    try:
+        url = f"https://inventory.roblox.com/v1/users/{roblox_id}/items/GamePass/{gamepass_id}"
+        headers = {}
+        if ROBLOX_COOKIE:
+            headers["Cookie"] = f".ROBLOSECURITY={ROBLOX_COOKIE}"
+        async with s.get(url, headers=headers) as r:
+            if r.status == 200:
+                j = await r.json()
+                return len(j.get("data", [])) > 0
+    except Exception: pass
     return False
 
+# --- Bio verify ---
+def generate_bio_code() -> str:
+    return f"void-{random.randint(1000,9999)}"
 
-# --- REALTIME STATS CHANNELS UPDATE HELPER ---
+async def check_bio_code(roblox_id: int, code: str) -> bool:
+    desc = await roblox_get_description(roblox_id)
+    return code.lower() in desc.lower()
 
-async def update_stats_channels(guild):
-    """Aktualisiert sofort und in Echtzeit die Namen der Server-Statistik Kanäle."""
-    member_count = len(guild.members)
-    booster_count = guild.premium_subscription_count
-    
-    customer_role = discord.utils.get(guild.roles, name="🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿")
-    customer_count = len(customer_role.members) if customer_role else 0
+# =====================================================================
+#  🛍️  AUTO-DELIVERY SERVICE
+# =====================================================================
+async def find_owned_product(roblox_id: int):
+    for key, p in PRODUCTS.items():
+        gp = p.get("gamepass_id")
+        if gp and await roblox_owns_gamepass(roblox_id, gp):
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                cur = await db.execute(
+                    "SELECT id FROM purchases WHERE roblox_id=? AND product_key=? AND delivered=1",
+                    (roblox_id, key))
+                if await cur.fetchone():
+                    continue
+            return key, p
+    return None, None
 
-    open_tix_count = 0
-    for c in guild.text_channels:
-        if any(x in c.name.lower() for x in ["kauf-", "support-", "partner-"]) or (c.topic and "von" in c.topic):
-            open_tix_count += 1
-
-    for vc in guild.voice_channels:
-        try:
-            if vc.name.startswith("👥│Mitglieder:"):
-                await vc.edit(name=f"👥│Mitglieder: {member_count}")
-            elif vc.name.startswith("💎│Booster:"):
-                await vc.edit(name=f"💎│Booster: {booster_count}")
-            elif vc.name.startswith("🛒│Kunden:"):
-                await vc.edit(name=f"🛒│Kunden: {customer_count}")
-            elif vc.name.startswith("🎟️│Offene Tickets:"):
-                await vc.edit(name=f"🎟️│Offene Tickets: {open_tix_count}")
-        except discord.Forbidden:
-            logger.warning(f"Keine Berechtigung zum Bearbeiten des Stats-Kanals {vc.name}.")
-        except Exception as e:
-            logger.error(f"Fehler bei Stats-Kanal Edit: {e}")
-
-
-# --- ROBLOX VERIFIZIERUNGS BUTTONS ---
-
-class RobloxBioVerifyView(discord.ui.View):
-    """Zwei-Schritt Abfrage zur Bestätigung des Roblox Accounts per Bio-Code."""
-    def __init__(self, roblox_id, roblox_name, roblox_display, sec_code):
-        super().__init__(timeout=180)
-        self.roblox_id = roblox_id
-        self.roblox_name = roblox_name
-        self.roblox_display = roblox_display
-        self.sec_code = sec_code
-
-    @discord.ui.button(label="Bio überprüft ✅", style=discord.ButtonStyle.success, custom_id="bio_verify_yes")
-    async def confirm_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        
-        url = f"https://users.roblox.com/v1/users/{self.roblox_id}"
-        desc = ""
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.get(url) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        desc = data.get("description", "")
-            except Exception:
-                pass
-
-        if self.sec_code.lower() in desc.lower() or "void" in desc.lower():
-            guild = interaction.guild
-            member = interaction.user
-
-            verified_role = discord.utils.get(guild.roles, name="👤│ 𝗩𝗢𝗜𝗗 • 𝗩𝗲𝗿𝗶𝗳𝗶𝗲𝗱")
-            member_role = discord.utils.get(guild.roles, name="👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿")
-            
-            try:
-                roles_to_add = []
-                if verified_role: roles_to_add.append(verified_role)
-                if member_role: roles_to_add.append(member_role)
-                if roles_to_add:
-                    await member.add_roles(*roles_to_add)
-                await member.edit(nick=self.roblox_name)
-            except Exception:
-                pass
-
-            db.add_coins(member.id, 10) # +10 Void-Coins
-
-            success_embed = create_prestige_embed(
-                title="⚡ Bio-Auth Verifizierung erfolgreich!",
-                description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-                            f"> 🎉 Herzlichen Glückwunsch, {member.mention}!\n\n"
-                            f"Du hast dich 100% fälschungssicher als **{self.roblox_name}** verifiziert.\n"
-                            f"> **Roblox-ID:** `{self.roblox_id}`\n"
-                            f"> **Willkommensbonus:** `+10 Void-Coins` 🪙\n\n"
-                            f"Sämtliche Serverlounges wurden für dich freigeschaltet!",
-                color=0x39ff14,
-                author_user=member,
-                bot_user=interaction.client.user
-            )
-            
-            avatar_url = await get_roblox_avatar(self.roblox_id)
-            if avatar_url: success_embed.set_thumbnail(url=avatar_url)
-
-            await interaction.followup.send(embed=success_embed, ephemeral=True)
-            self.stop()
-            await update_stats_channels(guild)
-
-            log_channel = discord.utils.get(guild.text_channels, name="⚙️│system-logs")
-            if log_channel:
-                log_embed = create_prestige_embed(
-                    title="👤 Mitglied verifiziert (Bio-Code-Auth)",
-                    description=f"> **User:** {member.mention} ({member.name})\n"
-                                f"> **Roblox:** [{self.roblox_name}](https://www.roblox.com/users/{self.roblox_id}/profile)\n"
-                                f"> **Sicherheitscode:** `{self.sec_code}` *(Verifiziert)*",
-                    color=0x39ff14,
-                    author_user=member,
-                    bot_user=interaction.client.user
-                )
-                await log_channel.send(embed=log_embed)
-        else:
-            await interaction.followup.send(
-                f"❌ Sicherheitscode `{self.sec_code}` nicht in deiner Bio gefunden!\n"
-                f"-> Bitte trage `{self.sec_code}` in deine Roblox Profilbeschreibung ein und klicke erneut auf den Button.",
-                ephemeral=True
-            )
-
-    @discord.ui.button(label="Abbrechen ❌", style=discord.ButtonStyle.danger, custom_id="bio_verify_no")
-    async def confirm_no(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = create_prestige_embed(
-            title="❌ Verifizierung abgebrochen",
-            description="> Der Vorgang wurde abgebrochen.",
-            color=0xff003c,
-            author_user=interaction.user,
-            bot_user=interaction.client.user
+async def record_purchase(discord_id:int, roblox_id:int, product_key:str, product:dict):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "INSERT INTO purchases(discord_id,roblox_id,product_key,gamepass_id,robux_price,delivered,delivery_at) VALUES(?,?,?,?,?,1,CURRENT_TIMESTAMP)",
+            (discord_id, roblox_id, product_key, product.get("gamepass_id"), product.get("robux_price",0))
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        self.stop()
+        await db.execute(
+            "UPDATE users SET purchases=purchases+1, total_spent_robux=total_spent_robux+? WHERE discord_id=?",
+            (product.get("robux_price",0), discord_id)
+        )
+        today = datetime.date.today().isoformat()
+        await db.execute(
+            "INSERT INTO revenue_daily(day,robux,purchases,customers) VALUES(?,?,1,1) ON CONFLICT(day) DO UPDATE SET robux=robux+excluded.robux, purchases=purchases+1",
+            (today, product.get("robux_price",0))
+        )
+        await db.commit()
+        cur = await db.execute("SELECT last_insert_rowid()")
+        row = await cur.fetchone()
+        return row[0] if row else None
 
+# =====================================================================
+#  🪙  COINS
+# =====================================================================
+async def add_coins(discord_id:int, amount:int, reason:str, meta:str=""):
+    if amount==0: return
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO users(discord_id,coins) VALUES(?,0)", (discord_id,))
+        await db.execute("UPDATE users SET coins=coins+? WHERE discord_id=?", (amount, discord_id))
+        await db.execute("INSERT INTO coins_ledger(discord_id,amount,reason,meta) VALUES(?,?,?,?)",
+                         (discord_id, amount, reason, meta))
+        await db.commit()
 
-# --- INTERAKTIVES TICKET-SYSTEM MODALS (ADD/REMOVE USER) ---
+async def get_coins(discord_id:int)->int:
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute("SELECT coins FROM users WHERE discord_id=?", (discord_id,))
+        row = await cur.fetchone()
+        return row[0] if row else 0
 
-class AddUserModal(discord.ui.Modal, title="User zum Ticket hinzufügen"):
-    user_input = discord.ui.TextInput(
-        label="User-ID oder Username", 
-        placeholder="z.B. 123456789012345678 oder name", 
-        required=True
-    )
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        channel = interaction.channel
-        
-        user_str = self.user_input.value
-        user = None
-        
-        # Suchen per ID
-        if user_str.isdigit():
-            user = guild.get_member(int(user_str))
-            if not user:
-                try:
-                    user = await guild.fetch_member(int(user_str))
-                except Exception:
-                    pass
-        # Suchen per Name
-        if not user:
-            user = discord.utils.get(guild.members, name=user_str)
-            
-        if not user:
-            await interaction.response.send_message(f"❌ User '{user_str}' wurde auf diesem Server nicht gefunden!", ephemeral=True)
-            return
-            
-        try:
-            await channel.set_permissions(user, view_channel=True, send_messages=True, read_message_history=True)
-            embed = create_prestige_embed(
-                title="➕ User hinzugefügt",
-                description=f"> {interaction.user.mention} hat {user.mention} zum Ticket hinzugefügt.",
-                color=0x39ff14,
-                author_user=interaction.user,
-                bot_user=interaction.client.user
-            )
-            await channel.send(embed=embed)
-            await interaction.response.send_message(f"✅ {user.name} wurde erfolgreich hinzugefügt!", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Fehler beim Hinzufügen: {e}", ephemeral=True)
+async def spend_coins(discord_id:int, amount:int, reason:str)->bool:
+    bal = await get_coins(discord_id)
+    if bal < amount: return False
+    await add_coins(discord_id, -amount, reason)
+    return True
 
+# =====================================================================
+#  🚨  ANTISCAM ENGINE
+# =====================================================================
+URL_RE = re.compile(r'https?://[^\s<]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s<]*)?', re.I)
 
-class RemoveUserModal(discord.ui.Modal, title="User aus Ticket entfernen"):
-    user_input = discord.ui.TextInput(
-        label="User-ID oder Username", 
-        placeholder="z.B. 123456789012345678", 
-        required=True
-    )
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        channel = interaction.channel
-        
-        user_str = self.user_input.value
-        user = None
-        
-        if user_str.isdigit():
-            user = guild.get_member(int(user_str))
-            if not user:
-                try:
-                    user = await guild.fetch_member(int(user_str))
-                except Exception:
-                    pass
-        if not user:
-            user = discord.utils.get(guild.members, name=user_str)
-            
-        if not user:
-            await interaction.response.send_message(f"❌ User '{user_str}' wurde nicht gefunden!", ephemeral=True)
-            return
-            
-        try:
-            await channel.set_permissions(user, overwrite=None)
-            embed = create_prestige_embed(
-                title="➖ User entfernt",
-                description=f"> {interaction.user.mention} hat {user.mention} aus dem Ticket entfernt.",
-                color=0xff003c,
-                author_user=interaction.user,
-                bot_user=interaction.client.user
-            )
-            await channel.send(embed=embed)
-            await interaction.response.send_message(f"✅ {user.name} wurde erfolgreich entfernt!", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Fehler beim Entfernen: {e}", ephemeral=True)
-
-
-# --- TICKET TRANSCRIPT & CLOSE HELPER ---
-
-async def execute_ticket_close_process(channel, closed_by_user, bot_user):
-    db.add_log("ticket", f"Ticket '{channel.name}' von {closed_by_user.name} geschlossen & archiviert")
-    embed_closing = create_prestige_embed(
-        title="🔒 Ticket-Schließung",
-        description="> ⚠️ Dieses Ticket wird transkribiert und in **4 Sekunden** endgültig gelöscht...",
-        color=0xff003c,
-        author_user=closed_by_user,
-        bot_user=bot_user
-    )
+def extract_urls(text:str): return URL_RE.findall(text or "")
+def normalize_domain(url:str)->str:
+    if not url.startswith("http"): url="http://"+url
     try:
-        await channel.send(embed=embed_closing)
-    except Exception:
-        pass
-    await asyncio.sleep(4)
+        p=urlparse(url)
+        return (p.hostname or "").lower().lstrip("www.")
+    except: return ""
 
+def levenshtein(a:str,b:str)->int:
+    if a==b: return 0
+    la,lb=len(a),len(b)
+    if la==0: return lb
+    if lb==0: return la
+    prev=list(range(lb+1))
+    for i,ca in enumerate(a,1):
+        cur=[i]
+        for j,cb in enumerate(b,1):
+            cost=0 if ca==cb else 1
+            cur.append(min(cur[-1]+1, prev[j]+1, prev[j-1]+cost))
+        prev=cur
+    return prev[-1]
+
+def is_safe_domain(host:str)->bool:
+    if not host: return False
+    for safe in SAFE_DOMAINS:
+        if host==safe or host.endswith("."+safe): return True
+    for target in ["roblox.com","discord.com","discord.gg","youtube.com"]:
+        if levenshtein(host,target)<=2 and host!=target: return False
+        if target.replace(".","") in host.replace(".","") and host!=target and not host.endswith("."+target):
+            return False
+    return True
+
+def scan_message_antiscam(content:str)->list:
+    bad=[]
+    for url in extract_urls(content):
+        host=normalize_domain(url)
+        if not host: continue
+        low=(url+" "+host).lower()
+        if any(s in low for s in SUSPICIOUS_KEYWORDS):
+            bad.append({"url":url,"host":host,"reason":"typosquatting / scam keyword"})
+            continue
+        if not is_safe_domain(host):
+            bad.append({"url":url,"host":host,"reason":"domain not whitelisted"})
+    return bad
+
+# =====================================================================
+#  📜  LOGGER SERVICE – 12 KANÄLE
+# =====================================================================
+LOG_COLORS = {
+    "join":0x2ecc71, "voice":0x3498db, "message":0xe67e22, "shop":0xf1c40f,
+    "verify":0x9b59b6, "antiscam":0xe74c3c, "ticket":0x1abc9c,
+    "coins":0xFFD700, "mod":0xe74c3c, "ticker":0xFFD700,
+    "bot":0x95a5a6, "owner":0x2c3e50,
+}
+async def send_log(bot, log_type:str, embed:discord.Embed=None, content:str=None,
+                   discord_id:int=None, channel_id:int=None, meta:str=""):
+    chan_id = LOG_CHANNELS.get(log_type,0)
+    if not chan_id: return
+    ch = bot.get_channel(chan_id)
+    if ch is None:
+        try: ch = await bot.fetch_channel(chan_id)
+        except: return
     try:
-        messages = []
-        async for msg in channel.history(limit=1000, oldest_first=True):
-            timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
-            author = f"{msg.author.name}#{msg.author.discriminator}" if msg.author.discriminator != "0" else msg.author.name
-            if msg.author.bot:
-                author += " [BOT]"
-            content_str = msg.content if msg.content else "[Kein Textinhalt]"
-            if msg.attachments:
-                att_urls = ", ".join([att.url for att in msg.attachments])
-                content_str += f" (Anhänge: {att_urls})"
-            if msg.embeds:
-                content_str += f" [Embed: {msg.embeds[0].title or 'Ohne Titel'}]"
-            messages.append(f"[{timestamp}] {author}: {content_str}")
-
-        transcript_content = (
-            f"==================================================\n"
-            f"         𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 - TICKET TRANSKRIPT             \n"
-            f"==================================================\n"
-            f"Kanalname:     {channel.name}\n"
-            f"Geschlossen:   {closed_by_user.name} ({closed_by_user.id})\n"
-            f"Nachrichten:   {len(messages)}\n"
-            f"==================================================\n\n"
-            + "\n".join(messages)
-        )
-
-        ticket_logs_channel = discord.utils.get(channel.guild.text_channels, name="💾│ticket-logs")
-        if ticket_logs_channel:
-            file_data = io.BytesIO(transcript_content.encode("utf-8"))
-            discord_file = discord.File(file_data, filename=f"transcript-{channel.name}.txt")
-            embed_log = create_prestige_embed(
-                title="💾 Ticket-Transkript archiviert",
-                description=f"> **Ticket:** {channel.name}\n"
-                            f"> **Geschlossen von:** {closed_by_user.mention}\n"
-                            f"> Das vollständige Gesprächsprotokoll wurde erfolgreich gesichert.",
-                color=0xff003c,
-                author_user=closed_by_user,
-                bot_user=bot_user
-            )
-            await ticket_logs_channel.send(embed=embed_log, file=discord_file)
-    except Exception as e:
-        logger.error(f"Fehler beim Erstellen des Ticket-Transkripts: {e}")
-
+        if embed:
+            if not embed.timestamp: embed.timestamp = datetime.datetime.utcnow()
+            if not embed.color: embed.color = LOG_COLORS.get(log_type,0x7d7d7d)
+        await ch.send(content=content, embed=embed)
+    except: pass
     try:
-        await channel.delete()
-    except Exception as e:
-        logger.error(f"Fehler beim Löschen des Ticket-Kanals: {e}")
-
-
-# --- KAUF-TICKET SCHLIESSUNGS-QUESTIONNAIRE ---
-
-class PurchaseReviewModal(discord.ui.Modal):
-    def __init__(self, product_name: str):
-        super().__init__(title="⭐ Deine Bewertung (3/3)")
-        self.product_name = product_name
-
-    stars_input = discord.ui.TextInput(
-        label="Sterne-Bewertung (1 bis 5)",
-        placeholder="z.B. ⭐⭐⭐⭐⭐ oder 5/5",
-        required=True,
-        max_length=25
-    )
-
-    feedback_input = discord.ui.TextInput(
-        label="Wie fandest du Support & Produkt?",
-        style=discord.TextStyle.paragraph,
-        placeholder="Beschreibe kurz deine Erfahrung... (Sehr schneller Support, FastFlags funktionieren perfekt etc.)",
-        required=True,
-        max_length=1000
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        member = interaction.user
-
-        stars = self.stars_input.value
-        feedback = self.feedback_input.value
-
-        vouch_channel = discord.utils.get(guild.text_channels, name="🤝│vouches") or discord.utils.get(guild.text_channels, name="vouches")
-
-        if vouch_channel:
-            vouch_embed = create_prestige_embed(
-                title="⭐ NEUE KUNDENBEWERTUNG ⭐",
-                description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-                            f"> **Kunde:** {member.mention} ({member.name})\n"
-                            f"> **Produkt:** `{self.product_name}`\n"
-                            f"> **Bewertung:** {stars}\n\n"
-                            f"**Rezension:**\n"
-                            f"> *\"{feedback}\"*",
-                color=0xffd700,
-                author_user=member,
-                bot_user=interaction.client.user
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            await db.execute(
+                "INSERT INTO logs(log_type,discord_id,channel_id,content,meta) VALUES(?,?,?,?,?)",
+                (log_type, discord_id, channel_id, content or (embed.title if embed else ""), meta)
             )
-            vouch_embed.set_thumbnail(url=member.display_avatar.url)
-            try:
-                await vouch_channel.send(embed=vouch_embed)
-            except Exception:
-                pass
+            await db.commit()
+    except: pass
 
-        thank_embed = create_prestige_embed(
-            title="🎉 Herzlichen Dank für deine wunderbare Bewertung!",
-            description=f"> Dein Feedback wurde direkt im Kanal {vouch_channel.mention if vouch_channel else '#vouches'} veröffentlicht!\n\n"
-                        f"Das Ticket wird nun abgeschlossen...",
-            color=0x39ff14,
-            author_user=member,
-            bot_user=interaction.client.user
-        )
-        await interaction.response.send_message(embed=thank_embed)
-
-        await execute_ticket_close_process(interaction.channel, member, interaction.client.user)
-
-
-class PurchaseQuestion2View(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="🚀 FastFlags", style=discord.ButtonStyle.primary, custom_id="pq2_fastflags")
-    async def prod_fastflags(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(PurchaseReviewModal("FastFlags 🚀"))
-
-    @discord.ui.button(label="👕 T-Shirt / Kleidung", style=discord.ButtonStyle.primary, custom_id="pq2_tshirt")
-    async def prod_tshirt(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(PurchaseReviewModal("T-Shirt / Kleidung 👕"))
-
-    @discord.ui.button(label="🖥️ Discord Template", style=discord.ButtonStyle.primary, custom_id="pq2_template")
-    async def prod_template(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(PurchaseReviewModal("Discord Template 🖥️"))
-
-    @discord.ui.button(label="✨ Sonstiges Produkt", style=discord.ButtonStyle.secondary, custom_id="pq2_other")
-    async def prod_other(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(PurchaseReviewModal("Sonstiges Produkt ✨"))
-
-    @discord.ui.button(label="Überspringen ⏩", style=discord.ButtonStyle.danger, custom_id="pq2_skip")
-    async def skip_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        for child in self.children: child.disabled = True
-        await interaction.response.edit_message(view=self)
-        await execute_ticket_close_process(interaction.channel, interaction.user, interaction.client.user)
-
-
-class PurchaseQuestion1View(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Ja, habe ich! 🛍️", style=discord.ButtonStyle.success, custom_id="pq1_yes")
-    async def bought_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        for child in self.children: child.disabled = True
-        await interaction.response.edit_message(view=self)
-        
-        embed_q2 = create_prestige_embed(
-            title="🛒 Frage 2/3: Produkt-Auswahl",
-            description="> Klasse! 🎉\n\n**Was genau hast du bei uns gekauft?**\nWähle unten das passende Produkt aus:",
-            color=0x00f0ff,
-            author_user=interaction.user,
-            bot_user=interaction.client.user
-        )
-        await interaction.followup.send(embed=embed_q2, view=PurchaseQuestion2View())
-
-    @discord.ui.button(label="Nein, nichts gekauft ❌", style=discord.ButtonStyle.secondary, custom_id="pq1_no")
-    async def bought_no(self, interaction: discord.Interaction, button: discord.ui.Button):
-        for child in self.children: child.disabled = True
-        await interaction.response.edit_message(view=self)
-        await execute_ticket_close_process(interaction.channel, interaction.user, interaction.client.user)
-
-
-# --- PERSISTENTE TICKET-ANSICHTEN (TICKET SYSTEM) ---
-
-class CloseTicketView(discord.ui.View):
-    """View für die Ticket-Steuerung im Ticket-Kanal."""
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="Ticket claimen", 
-        style=discord.ButtonStyle.primary, 
-        emoji="🙋‍♂️", 
-        custom_id="claim_ticket_btn"
-    )
-    async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = interaction.guild
-        channel = interaction.channel
-        member = interaction.user
-
-        support_role = discord.utils.get(guild.roles, name="🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁")
-        mod_role = discord.utils.get(guild.roles, name="🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿")
-        admin_role = discord.utils.get(guild.roles, name="🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻")
-        owner_role = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿")
-
-        has_staff_role = any(role in [support_role, mod_role, admin_role, owner_role] for role in member.roles)
-        if not has_staff_role and not member.guild_permissions.administrator:
-            await interaction.response.send_message("❌ Du gehörst nicht zum Support-Team!", ephemeral=True)
-            return
-
-        button.disabled = True
-        button.label = "Ticket geclaimed"
-        button.style = discord.ButtonStyle.secondary
-        
+def make_embed(title, description, color=None, user:discord.Member=None):
+    e = discord.Embed(title=title, description=description, timestamp=datetime.datetime.utcnow())
+    if color: e.color=color
+    if user:
         try:
-            ticket_creator = None
-            for overwrite_target, overwrite_value in channel.overwrites.items():
-                if isinstance(overwrite_target, discord.Member) and not overwrite_target.bot:
-                    ticket_creator = overwrite_target
-                    break
+            e.set_thumbnail(url=user.display_avatar.url)
+            e.set_footer(text=f"{user} • {user.id}", icon_url=user.display_avatar.url)
+        except: pass
+    return e
 
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-            }
-
-            if ticket_creator:
-                overwrites[ticket_creator] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
-            for role in [support_role, mod_role, admin_role, owner_role]:
-                if role and role != guild.default_role:
-                    overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
-
-            await channel.edit(overwrites=overwrites)
-
-            claim_embed = create_prestige_embed(
-                title="🙋‍♂️ Ticket geclaimed!",
-                description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-                    f"> Dieses Ticket wird nun exklusiv von {member.mention} betreut.\n"
-                    f"> Bitte richte alle weiteren Fragen direkt an deinen zuständigen Supporter.",
-                color=0x00f0ff,
-                author_user=member,
-                bot_user=interaction.client.user
-            )
-            await channel.send(embed=claim_embed)
-            await interaction.response.edit_message(view=self)
-
-            ticket_logs_channel = discord.utils.get(guild.text_channels, name="💾│ticket-logs")
-            if ticket_logs_channel:
-                log_claim = create_prestige_embed(
-                    title="🙋‍♂️ Ticket geclaimed",
-                    description=f"> **Kanal:** {channel.mention}\n"
-                                f"> **Supporter:** {member.mention} ({member.id})",
-                    color=0x00f0ff,
-                    author_user=member,
-                    bot_user=interaction.client.user
-                )
-                await ticket_logs_channel.send(embed=log_claim)
-
-        except Exception as e:
-            logger.error(f"Fehler beim Claimen des Tickets: {e}")
-            await interaction.response.send_message("❌ Fehler beim Aktualisieren der Ticketrechte.", ephemeral=True)
-
-    @discord.ui.button(
-        label="User hinzufügen", 
-        style=discord.ButtonStyle.success, 
-        emoji="➕", 
-        custom_id="add_user_ticket_btn"
+# =====================================================================
+#  📈  TICKER + REVENUE
+# =====================================================================
+async def send_purchase_ticker(bot, channel_id:int, buyer:discord.Member, product_name:str, robux:int):
+    ch = bot.get_channel(channel_id) or (await bot.fetch_channel(channel_id) if channel_id else None)
+    if not ch: return
+    embed = discord.Embed(
+        title="🎉 Neuer Kauf!",
+        description=f"**{buyer.mention}** hat soeben **{product_name}** erworben!\nVielen Dank! ❤️",
+        color=0xFFD700, timestamp=datetime.datetime.utcnow()
     )
-    async def add_user(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(AddUserModal())
-
-    @discord.ui.button(
-        label="User entfernen", 
-        style=discord.ButtonStyle.secondary, 
-        emoji="➖", 
-        custom_id="remove_user_ticket_btn"
-    )
-    async def remove_user(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(RemoveUserModal())
-
-    @discord.ui.button(
-        label="Ticket schließen", 
-        style=discord.ButtonStyle.red, 
-        emoji="🔒", 
-        custom_id="close_ticket_btn"
-    )
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(view=self)
-
-        channel = interaction.channel
-
-        # Prüfen ob es sich um ein Kauf-Ticket handelt
-        is_buy_ticket = (channel.topic and "Kauf-Anfrage" in channel.topic) or ("kauf" in channel.name.lower())
-
-        if is_buy_ticket:
-            embed_q1 = create_prestige_embed(
-                title="🛒 Frage 1/3: Produktkauf",
-                description="> Bevor wir dein Kauf-Ticket schließen:\n\n**Hast du erfolgreich ein Produkt bei uns gekauft?**",
-                color=0xffd700,
-                author_user=interaction.user,
-                bot_user=interaction.client.user
-            )
-            await channel.send(embed=embed_q1, view=PurchaseQuestion1View())
-        else:
-            await execute_ticket_close_process(channel, interaction.user, interaction.client.user)
-
-
-class TicketButton(discord.ui.View):
-    """View für das Ticket-Erstellungs-Panel mit Kauf, Support und Partner-Buttons."""
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="Produkt kaufen", 
-        style=discord.ButtonStyle.success, 
-        emoji="🛒", 
-        custom_id="btn_buy_ticket"
-    )
-    async def buy_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_custom_ticket(interaction, "🛒│kauf", "Kauf-Anfrage")
-
-    @discord.ui.button(
-        label="Allgemeiner Support", 
-        style=discord.ButtonStyle.primary, 
-        emoji="⚙️", 
-        custom_id="btn_support_ticket"
-    )
-    async def support_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_custom_ticket(interaction, "⚙️│support", "Allgemeiner Support")
-
-    @discord.ui.button(
-        label="Partnerschaft", 
-        style=discord.ButtonStyle.secondary, 
-        emoji="🤝", 
-        custom_id="btn_partner_ticket"
-    )
-    async def partner_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_custom_ticket(interaction, "🤝│partner", "Partnerschafts-Anfrage")
-
-    async def create_custom_ticket(self, interaction: discord.Interaction, prefix: str, ticket_type: str):
-        guild = interaction.guild
-        member = interaction.user
-
-        if not guild:
-            await interaction.response.send_message("Dieser Befehl kann nur auf einem Server genutzt werden.", ephemeral=True)
-            return
-
-        ticket_channel_name = f"{prefix}-{member.name.lower()}"
-
-        existing_channel = discord.utils.get(guild.channels, name=ticket_channel_name)
-        if existing_channel:
-            await interaction.response.send_message(
-                f"❌ Du hast bereits ein offenes Ticket für diesen Bereich: {existing_channel.mention}", 
-                ephemeral=True
-            )
-            return
-
-        owner_role = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿")
-        co_owner_role = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿")
-        admin_role = discord.utils.get(guild.roles, name="🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻")
-        manager_role = discord.utils.get(guild.roles, name="⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿")
-        mod_role = discord.utils.get(guild.roles, name="🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿")
-        support_role = discord.utils.get(guild.roles, name="🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁")
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            member: discord.PermissionOverwrite(
-                view_channel=True, 
-                send_messages=True, 
-                attach_files=True, 
-                embed_links=True, 
-                add_reactions=True,
-                read_message_history=True
-            )
-        }
-
-        for role in [owner_role, co_owner_role, admin_role, manager_role, mod_role, support_role]:
-            if role:
-                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
-        category = discord.utils.get(guild.categories, name="🎟️│── 𝗩𝗢𝗜𝗗 • 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 ──")
-
-        try:
-            ticket_channel = await guild.create_text_channel(
-                name=ticket_channel_name,
-                category=category,
-                overwrites=overwrites,
-                topic=f"{ticket_type} von {member.name}"
-            )
-
-            if ticket_type == "Kauf-Anfrage":
-                description = (
-                    f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-                    f"👋 **Herzlich willkommen, {member.mention}!**\n\n"
-                    f"> Vielen Dank für dein Interesse an den Produkten von **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣**.\n"
-                    f"> Unser Team wurde benachrichtigt und ist gleich für dich da!\n\n"
-                    f"📌 **Bitte teile uns direkt folgende Infos mit:**\n"
-                    f"> 🤖 │ **Roblox Username:**\n"
-                    f"> 🛍️ │ **Gewünschtes Produkt:** *(z.B. FastFlags, T-Shirt, Template)*\n"
-                    f"> 💳 │ **Zahlungsart:** *(PayPal, Robux, Paysafecard, Krypto)*\n\n"
-                    f"⏳ *Ein Teammitglied wird dein Ticket unten über 'Claimen' übernehmen.*"
-                )
-                color = 0x39ff14
-            elif ticket_type == "Allgemeiner Support":
-                description = (
-                    f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-                    f"👋 **Herzlich willkommen, {member.mention}!**\n\n"
-                    f"> Du benötigst technische Hilfe oder hast Fragen zu unserem Shop?\n"
-                    f"> Bitte schildere dein Problem so genau wie möglich!\n\n"
-                    f"📌 **Häufige Themen:**\n"
-                    f"> 🚀 │ Installation & Nutzung der FastFlags\n"
-                    f"> ⚙️ │ Hilfe bei Discord Server-Layouts & Rechten\n\n"
-                    f"⏳ *Ein Supporter widmet sich dir in Kürze.*"
-                )
-                color = 0x00f0ff
-            else:
-                description = (
-                    f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-                    f"🤝 **Partnerschafts-Anfrage von {member.mention}**\n\n"
-                    f"> Schön, dass du mit **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣** kooperieren möchtest!\n\n"
-                    f"📌 **Bitte nenne uns kurz deine Eckdaten:**\n"
-                    f"> 🔗 │ **Thema deines Servers:**\n"
-                    f"> 👥 │ **Mitgliederanzahl:**\n"
-                    f"> 📍 │ **Dauerhafter Einladungslink:**\n\n"
-                    f"⏳ *Die Projektleitung wird sich dein Angebot ansehen.*"
-                )
-                color = 0xffa500
-
-            embed = create_prestige_embed(
-                title=f"⚡ 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 • {ticket_type.upper()} ⚡",
-                description=description,
-                color=color,
-                author_user=member,
-                bot_user=interaction.client.user
-            )
-            embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
-
-            staff_pings = []
-            for role in [owner_role, co_owner_role, admin_role, support_role]:
-                if role: staff_pings.append(role.mention)
-            pings_str = " ".join(staff_pings) if staff_pings else ""
-
-            await ticket_channel.send(
-                content=f"{member.mention} {pings_str}", 
-                embed=embed, 
-                view=CloseTicketView()
-            )
-
-            await interaction.response.send_message(
-                f"✅ Dein Ticket wurde erfolgreich erstellt: {ticket_channel.mention}", 
-                ephemeral=True
-            )
-
-            ticket_logs_channel = discord.utils.get(guild.text_channels, name="💾│ticket-logs")
-            if ticket_logs_channel:
-                embed_created = create_prestige_embed(
-                    title="🎟️ Ticket erstellt",
-                    description=f"> **Kanal:** {ticket_channel.mention}\n"
-                                f"> **Typ:** {ticket_type}\n"
-                                f"> **Ersteller:** {member.mention} ({member.id})",
-                    color=0x39ff14,
-                    author_user=member,
-                    bot_user=interaction.client.user
-                )
-                await ticket_logs_channel.send(embed=embed_created)
-
-        except Exception as e:
-            logger.error(f"Fehler beim Erstellen des Ticket-Kanals: {e}")
-            await interaction.response.send_message(
-                "❌ Fehler beim Erstellen des Tickets. Bitte wende dich an einen Administrator.", 
-                ephemeral=True
-            )
-
-
-# --- PERSISTENTER VERIFIZIERUNGS BUTTON (EINTRETEN VERIFIZIERUNG) ---
-
-class SimpleVerifyButton(discord.ui.View):
-    """View für die 1-Klick-Verifizierung im Server."""
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="Verifizieren 🔐", 
-        style=discord.ButtonStyle.success, 
-        emoji="🔐", 
-        custom_id="simple_verify_btn"
-    )
-    async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = interaction.guild
-        member = interaction.user
-        
-        member_role = discord.utils.get(guild.roles, name="👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿")
-        if not member_role:
-            await interaction.response.send_message("❌ Fehler: Die Mitgliederrolle wurde nicht gefunden!", ephemeral=True)
-            return
-
-        if member_role in member.roles:
-            await interaction.response.send_message("ℹ️ Du bist bereits verifiziert!", ephemeral=True)
-            return
-
-        try:
-            await member.add_roles(member_role)
-            await interaction.response.send_message("✅ Du hast dich erfolgreich verifiziert und die Mitglieder-Rolle erhalten!", ephemeral=True)
-            
-            log_channel = discord.utils.get(guild.text_channels, name="⚙️│system-logs")
-            if log_channel:
-                embed = create_prestige_embed(
-                    title="🔐 Mitglied verifiziert (1-Klick)",
-                    description=f"> **User:** {member.mention} ({member.name})\n"
-                                f"> Hat die Verifizierung per Knopfdruck abgeschlossen.",
-                    color=0x39ff14,
-                    author_user=member,
-                    bot_user=interaction.client.user
-                )
-                await log_channel.send(embed=embed)
-                
-            # Echtzeit Stats-Update
-            await update_stats_channels(guild)
-
-        except discord.Forbidden:
-            await interaction.response.send_message("❌ Fehler: Mir fehlen die Rechte, um dir die Rolle zu geben. Bitte wende dich an einen Admin!", ephemeral=True)
-
-
-# --- BOT KLASSE ---
-
-class VoidShopBot(commands.Bot):
-    def __init__(self):
-        intents = discord.Intents.default()
-        intents.message_content = True
-        intents.guilds = True
-        intents.members = True
-        intents.invites = True
-        super().__init__(command_prefix=PREFIX, intents=intents, help_command=None)
-        self.invites_cache = {}
-
-    async def setup_hook(self):
-        self.add_view(TicketButton())
-        self.add_view(CloseTicketView())
-        self.add_view(SimpleVerifyButton())
-        self.add_view(PurchaseQuestion1View())
-        self.add_view(PurchaseQuestion2View())
-        
-        # Starte den Stats-Update-Loop (hier läuft die Event-Loop garantiert!)
-        if not update_stats_task.is_running():
-            update_stats_task.start()
-        if not status_rotation_task.is_running():
-            status_rotation_task.start()
-            
-        logger.info("Persistente UI-Views und Stats-Loop geladen.")
-
-    async def on_ready(self):
-        activity = discord.Activity(
-            type=discord.ActivityType.watching, 
-            name="über 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 | !Start"
-        )
-        await self.change_presence(status=discord.Status.online, activity=activity)
-        
-        # Cache Invites für Invite-Tracking
-        for guild in self.guilds:
-            try:
-                self.invites_cache[guild.id] = await guild.invites()
-                # Aktualisiere Statistiken beim Botstart sofort
-                await update_stats_channels(guild)
-            except Exception:
-                pass
-
-        logger.info(f"============= 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 PRESTIGE BOT ONLINE =============")
-        logger.info(f"Eingeloggt als: {self.user.name} ({self.user.id})")
-        logger.info(f"Webserver läuft auf Port: {os.environ.get('PORT', 8080)}")
-        logger.info(f"======================================================")
-
-
-bot = VoidShopBot()
-
-
-# --- STATS-LOOP TASK (24/7 LIVE STATS COUNTER) ---
-
-@tasks.loop(minutes=10)
-async def update_stats_task():
-    """Backup-Loop: Aktualisiert alle 10 Minuten die Namen der Server-Statistik Kanäle."""
-    logger.info("Führe Backup-Aktualisierung der Server-Statistiken durch...")
-    for guild in bot.guilds:
-        await update_stats_channels(guild)
-
-
-@tasks.loop(seconds=5)
-async def status_rotation_task():
-    """Wechselt alle 5 Sekunden durch 5 repräsentative Prestige-Statusmeldungen."""
-    if not bot.is_ready():
-        return
-    statuses = [
-        ("⭐ 5 von 5 Sterne Bewertungen!", discord.ActivityType.watching),
-        ("🚀 +120 FPS mit VOID FastFlags", discord.ActivityType.playing),
-        ("🛍️ 24/7 Auto-Delivery Cloud Shop", discord.ActivityType.competing),
-        ("🎟️ Live Support & Ticket Center", discord.ActivityType.listening),
-        ("👑 Powered by VOID • Prestige", discord.ActivityType.watching)
-    ]
-    idx = getattr(bot, "status_idx", 0)
-    text, act_type = statuses[idx % len(statuses)]
-    bot.status_idx = idx + 1
-    
-    try:
-        activity = discord.Activity(type=act_type, name=text)
-        await bot.change_presence(status=discord.Status.online, activity=activity)
-    except Exception:
-        pass
-
-
-# --- VERIFY & CHECKBUY COMMANDS (REAL ROBLOX API INTEGRATION) ---
-
-@bot.command(name="verify", aliases=["verify-roblox", "Verify"])
-@commands.guild_only()
-async def verify_command(ctx, roblox_username: str = None):
-    """
-    Verifiziert ein Discord-Mitglied mit seinem Roblox-Account.
-    Sucht live über die Roblox API, fragt nach Bestätigung und ändert Nickname + Rolle.
-    """
-    if not roblox_username:
-        embed_help = create_prestige_embed(
-            title="💡 Roblox Verifizierung",
-            description="> Bitte gib deinen Roblox Usernamen an!\n\n**Beispiel:**\n`!verify Lukas_Roblox`",
-            color=0xff003c,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await ctx.send(embed=embed_help)
-        return
-
-    progress_embed = create_prestige_embed(
-        title="🔍 Suche Roblox-Konto...",
-        description=f"> Kontaktiere die Roblox Server für **'{roblox_username}'**...",
-        color=0x00f0ff,
-        author_user=ctx.author,
-        bot_user=bot.user
-    )
-    status_msg = await ctx.send(embed=progress_embed)
-
-    roblox_id, roblox_display, roblox_name = await get_roblox_user(roblox_username)
-
-    if not roblox_id:
-        embed_err = create_prestige_embed(
-            title="❌ Konto nicht gefunden",
-            description=f"> Der Roblox Username **'{roblox_username}'** existiert nicht!\nBitte überprüfe die Schreibweise.",
-            color=0xff003c,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await status_msg.edit(embed=embed_err)
-        return
-
-    avatar_url = await get_roblox_avatar(roblox_id)
-    sec_code = f"void-{random.randint(1000, 9999)}"
-
-    confirm_embed = create_prestige_embed(
-        title="🔐 Roblox Bio-Code Verifizierung",
-        description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-                    f"> **100% sichere Identitätsgarantie**\n\n"
-                    f"Account gefunden: **{roblox_name}** (`{roblox_id}`)\n\n"
-                    f"📌 **So verifizierst du dich:**\n"
-                    f"1️⃣ Kopiere diesen Sicherheitscode:\n"
-                    f"> `{sec_code}`\n"
-                    f"2️⃣ Füge ihn in deine **Roblox Profilbeschreibung (Bio)** ein.\n"
-                    f"3️⃣ Klicke unten auf **'Bio überprüft ✅'**.",
-        color=0xffd700,
-        author_user=ctx.author,
-        bot_user=bot.user
-    )
-    if avatar_url:
-        confirm_embed.set_thumbnail(url=avatar_url)
-
-    view = RobloxBioVerifyView(roblox_id, roblox_name, roblox_display, sec_code)
-    await status_msg.edit(embed=confirm_embed, view=view)
-
-
-@bot.command(name="checkbuy", aliases=["Checkbuy", "kaufprüfen"])
-@commands.guild_only()
-async def checkbuy_command(ctx, roblox_username: str = None, gamepass_id: int = None):
-    """
-    Prüft live über die Roblox Inventory API, ob der User den angegebenen Gamepass besitzt.
-    Wenn ja, schaltet er automatisch die Customer-Rollen frei!
-    """
-    if not roblox_username or not gamepass_id:
-        embed_help = create_prestige_embed(
-            title="🛒 Automatische Kaufprüfung",
-            description="> Prüfe live deinen Einkauf über Roblox und erhalte deine Rollen!\n\n"
-                        "**Nutzung:**\n"
-                        f"`!checkbuy <Roblox_Username> <Gamepass_ID>`\n\n"
-                        f"**Beispiel:**\n"
-                        f"`!checkbuy Lukas_Roblox 12345678`",
-            color=0x00f0ff,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await ctx.send(embed=embed_help)
-        return
-
-    progress_embed = create_prestige_embed(
-        title="🔄 Überprüfe Roblox Inventar...",
-        description=f"> Suche Roblox-Konto **'{roblox_username}'** und überprüfe den Besitz von Gamepass `{gamepass_id}`...",
-        color=0xffd700,
-        author_user=ctx.author,
-        bot_user=bot.user
-    )
-    status_msg = await ctx.send(embed=progress_embed)
-
-    roblox_id, roblox_display, roblox_name = await get_roblox_user(roblox_username)
-    if not roblox_id:
-        embed_err = create_prestige_embed(
-            title="❌ Roblox Konto nicht gefunden",
-            description=f"> Der Username **'{roblox_username}'** wurde auf Roblox nicht gefunden.",
-            color=0xff003c,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await status_msg.edit(embed=embed_err)
-        return
-
-    has_purchased = await check_roblox_ownership(roblox_id, gamepass_id)
-
-    if has_purchased:
-        guild = ctx.guild
-        member = ctx.author
-
-        customer_role = discord.utils.get(guild.roles, name="🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿")
-        premium_buyer_role = discord.utils.get(guild.roles, name="💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿")
-
-        added_roles = []
-        try:
-            if customer_role:
-                await member.add_roles(customer_role)
-                added_roles.append(customer_role.name)
-            if premium_buyer_role:
-                await member.add_roles(premium_buyer_role)
-                added_roles.append(premium_buyer_role.name)
-
-            vouch_ch = discord.utils.get(guild.text_channels, name="🤝│vouches") or discord.utils.get(guild.text_channels, name="vouches")
-            vouch_mention = vouch_ch.mention if vouch_ch else "`#vouches`"
-
-            success_embed = create_prestige_embed(
-                title="🎉 Kauf verifiziert & Rollen vergeben!",
-                description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-                            f"> ✨ **Besitz verifiziert!**\n\n"
-                            f"Du besitzt den Roblox Gamepass `{gamepass_id}`.\n"
-                            f"Folgende Premium-Käuferrollen wurden dir freigeschaltet:\n"
-                            f"> 👑 │ " + " & ".join([f"**{r}**" for r in added_roles]) + "\n\n"
-                            f"Vielen Dank für deinen Einkauf bei **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣**! Du hast ab jetzt Zugriff auf die exklusiven Lounges.\n\n"
-                            f"⭐ **Zufrieden mit deinem Einkauf?**\n"
-                            f"> Wir würden uns riesig über eine gute Bewertung im Kanal {vouch_mention} freuen! 💬",
-                color=0x39ff14,
-                author_user=member,
-                bot_user=bot.user
-            )
-            avatar_url = await get_roblox_avatar(roblox_id)
-            if avatar_url:
-                success_embed.set_thumbnail(url=avatar_url)
-            
-            await status_msg.edit(embed=success_embed)
-
-            # --- AUTO-DELIVERY DM ---
-            try:
-                dm_em = create_prestige_embed(
-                    title="📦 VOID • AUTO-DELIVERY (Sofort-Lieferung)",
-                    description=f"Hallo {member.name}!\n\n"
-                                f"Dein Kauf von Gamepass `{gamepass_id}` wurde erfolgreich bestätigt.\n"
-                                f"Hier ist deine automatische Sofort-Lieferung:\n\n"
-                                f"🚀 **Prestige FastFlags & Optimierungspaket:**\n"
-                                f"> Download: `https://void-shop.cloud/downloads/fastflags-v2.zip`\n"
-                                f"> Anleitung: Entpacken und in den Roblox Client-Ordner einfügen. +120 FPS Garantie!\n\n"
-                                f"🎁 *Du hast +50 Void-Coins als Treuebonus erhalten!*",
-                    color=0x39ff14,
-                    bot_user=bot.user
-                )
-                await member.send(embed=dm_em)
-            except Exception:
-                pass
-
-            # --- FOMO TICKER & DATABASE ---
-            db.add_coins(member.id, 50)
-            db.add_purchase(member.name, f"Gamepass {gamepass_id}", 400)
-
-            live_ch = discord.utils.get(guild.text_channels, name="🛍️│live-käufe") or discord.utils.get(guild.text_channels, name="live-käufe")
-            if live_ch:
-                fomo_em = create_prestige_embed(
-                    title="🎉 NEUER KAUF ABSOLVIERT!",
-                    description=f"***„🎉 {member.mention} hat soeben das Premium FastFlags Paket (Gamepass `{gamepass_id}`) erworben! Vielen Dank!“***\n\n"
-                                f"> ⚡ **Lieferzeit:** `< 3 Sekunden` *(Auto-Delivery)*\n"
-                                f"> 🪙 **Bonus erhalten:** `+50 Void-Coins`",
-                    color=0x00ffff
-                )
-                fomo_em.set_thumbnail(url=member.display_avatar.url)
-                await live_ch.send(embed=fomo_em)
-
-            # Echtzeit Stats-Update
-            await update_stats_channels(guild)
-
-            log_channel = discord.utils.get(guild.text_channels, name="⚙️│system-logs")
-            if log_channel:
-                log_embed = create_prestige_embed(
-                    title="🛒 Automatische Kaufverifizierung",
-                    description=f"> **User:** {member.mention} ({member.name})\n"
-                                f"> **Roblox:** {roblox_name} ({roblox_id})\n"
-                                f"> **Gamepass:** `{gamepass_id}`\n"
-                                f"> **Rollen erhalten:** " + ", ".join(added_roles),
-                    color=0x39ff14,
-                    author_user=member,
-                    bot_user=bot.user
-                )
-                await log_channel.send(embed=log_embed)
-
-        except discord.Forbidden:
-            await status_msg.edit(content="❌ Fehler: Dem Bot fehlen die Rechte zum Vergeben der Rollen. Stelle sicher, dass die Bot-Rolle ganz oben steht!")
-    else:
-        embed_fail = create_prestige_embed(
-            title="❌ Verifizierung fehlgeschlagen",
-            description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-                        f"> 🔒 **Kauf wurde nicht gefunden.**\n\n"
-                        f"Roblox-User **{roblox_name}** besitzt den Gamepass `{gamepass_id}` aktuell nicht.\n"
-                        f"> Bitte stelle sicher, dass du den Gamepass mit diesem Account gekauft hast und dein Roblox Inventar öffentlich einsehbar ist!",
-            color=0xff003c,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        avatar_url = await get_roblox_avatar(roblox_id)
-        if avatar_url:
-            embed_fail.set_thumbnail(url=avatar_url)
-        await status_msg.edit(embed=embed_fail)
-
-
-# --- ROLES SETUP COMMAND (!role) ---
-
-@bot.command(name="role", aliases=["roles", "Role", "Roles"])
-@commands.guild_only()
-@commands.has_permissions(administrator=True)
-async def create_roles_command(ctx):
-    """
-    Erstellt alle 23 Premium-Rollen, prüft ob sie bereits existieren,
-    und setzt im Anschluss alle Kanalrechte für diese Rollen.
-    Inklusive dynamic-permissions Schutz.
-    """
-    progress_embed = create_prestige_embed(
-        title="👑 Rollen- & Berechtigungs-Setup",
-        description="> ⚙️ Initialisiere das Erstellen von 23 Premium-Rollen...\nBitte warten.",
-        color=0x00f0ff,
-        author_user=ctx.author,
-        bot_user=bot.user
-    )
-    status_msg = await ctx.send(embed=progress_embed)
-
-    guild = ctx.guild
-    bot_member = guild.me
-    bot_permissions = bot_member.guild_permissions
-
-    role_colors = {
-        # --- STAFF ROLES ---
-        "👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿": (0xff003c, True),        # Crimson Red
-        "👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿": (0xff3366, True),     # Light Pink-Red
-        "🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻": (0x00f0ff, True),        # Neon Cyan
-        "⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿": (0x00a8a8, True),      # Dark Teal
-        "🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿": (0x39ff14, False),    # Neon Green
-        "🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁": (0x20b2aa, False),      # Light Sea Green
-        "🚨│ 𝗩𝗢𝗜𝗗 • 𝗧𝗿𝗶𝗮𝗹 𝗠𝗼𝗱": (0xadff2f, False),    # Green Yellow
-        
-        # --- SPECIAL ROLES ---
-        "🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿": (0xffa500, False),      # Orange
-        "💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿": (0xf47fff, False),      # Pink
-        "🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣": (0xffd700, False),          # Gold (VIP)
-        "🫂│ 𝗩𝗢𝗜𝗗 • 𝗙𝗿𝗶𝗲𝗻𝗱": (0xff69b4, False),        # Hot Pink
-        "👤│ 𝗩𝗢𝗜𝗗 • 𝗩𝗲𝗿𝗶𝗳𝗶𝗲𝗱": (0x7f8c8d, False),      # Gray-Blue (Verified)
-        
-        # --- CUSTOMER ROLES ---
-        "🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿": (0xffff00, False),     # Yellow
-        "💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿": (0x00ffff, False), # Cyan Customer
-        
-        # --- REWARD ROLES (BUYER LEVELS) ---
-        "🥉│ 𝗕𝗿𝗼𝗻𝘇𝗲 𝗕𝘂𝘆𝗲𝗿": (0xcd7f32, False),       # Bronze
-        "🥈│ 𝗦𝗶𝗹𝘃𝗲𝗿 𝗕𝘂𝘆𝗲𝗿": (0xc0c0c0, False),       # Silver
-        "🥇│ 𝗚𝗼𝗹𝗱 𝗕𝘂𝘆𝗲𝗿": (0xffd700, False),         # Gold
-        "💎│ 𝗗𝗶𝗮𝗺𝗼𝗻𝗱 𝗕𝘂𝘆𝗲𝗿": (0xb9f2ff, False),       # Diamond
-        
-        # --- NOTIFICATION ROLES ---
-        "📢│ 𝗔𝗻𝗻𝗼𝘂𝗻𝗰𝗲𝗺𝗲𝗻𝘁 𝗣𝗶𝗻𝗴": (0x7289da, False),  # Discord Blue
-        "🎁│ 𝗚𝗶𝘃𝗲𝗮𝘄𝗮𝘆 𝗣𝗶𝗻𝗴": (0xff4500, False),      # Red-Orange
-        "📦│ 𝗣𝗿𝗼𝗱𝘂𝗰𝘁 𝗣𝗶𝗻𝗴": (0x32cd32, False),       # Lime Green
-        
-        # --- BASE ROLES ---
-        "👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿": (0xa0a0a0, False),       # Light Gray
-        "🤖│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝘁": (0x4a00a8, False)           # Dark Purple
+    try: embed.set_thumbnail(url=buyer.display_avatar.url)
+    except: pass
+    embed.add_field(name="Produkt", value=product_name, inline=True)
+    embed.add_field(name="Preis", value=f"{robux} Robux", inline=True)
+    embed.set_footer(text="Void_Shop • Live Käufe")
+    try: await ch.send(embed=embed)
+    except: pass
+
+async def get_revenue_summary():
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute("SELECT COALESCE(SUM(robux_price),0), COUNT(*) FROM purchases WHERE delivered=1")
+        total_robux, total_purchases = await cur.fetchone()
+        cur = await db.execute("SELECT COALESCE(SUM(robux_price),0), COUNT(*) FROM purchases WHERE delivered=1 AND created_at >= date('now','start of month')")
+        month_robux, month_purchases = await cur.fetchone()
+        cur = await db.execute("SELECT COALESCE(SUM(robux_price),0), COUNT(*) FROM purchases WHERE delivered=1 AND date(created_at)=date('now')")
+        today_robux, today_purchases = await cur.fetchone()
+        cur = await db.execute("SELECT product_key, COUNT(*), SUM(robux_price) FROM purchases WHERE delivered=1 GROUP BY product_key ORDER BY SUM(robux_price) DESC LIMIT 5")
+        top = await cur.fetchall()
+        cur = await db.execute("SELECT day, robux, purchases FROM revenue_daily ORDER BY day DESC LIMIT 30")
+        daily = await cur.fetchall()
+    return {
+        "total_robux": total_robux or 0, "total_purchases": total_purchases or 0,
+        "month_robux": month_robux or 0, "month_purchases": month_purchases or 0,
+        "today_robux": today_robux or 0, "today_purchases": today_purchases or 0,
+        "top_products": top, "daily": list(reversed(daily))
     }
 
-    created_roles = {}
-    roles_created_count = 0
-    roles_skipped_count = 0
-    roles_failed_count = 0
+# =====================================================================
+#  🤖  DISCORD BOT
+# =====================================================================
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None, case_insensitive=True)
 
-    for role_name, (color_hex, is_admin) in role_colors.items():
-        existing_role = discord.utils.get(guild.roles, name=role_name)
-        if existing_role:
-            created_roles[role_name] = existing_role
-            roles_skipped_count += 1
-            continue
+# ---------- VERIFY VIEW ----------
+class VerifyView(discord.ui.View):
+    def __init__(self, discord_id, roblox_id, roblox_name, code):
+        super().__init__(timeout=300)
+        self.discord_id=discord_id; self.roblox_id=roblox_id
+        self.roblox_name=roblox_name; self.code=code
 
-        try:
-            perms = discord.Permissions.none()
-            if is_admin and bot_permissions.administrator:
-                perms.administrator = True
-            elif "Moderator" in role_name or "Manager" in role_name:
-                requested_perms = [
-                    ("view_channel", True), ("send_messages", True), ("manage_messages", True),
-                    ("kick_members", True), ("ban_members", True), ("mute_members", True),
-                    ("deafen_members", True), ("move_members", True), ("change_nickname", True),
-                    ("read_message_history", True), ("attach_files", True), ("embed_links", True),
-                    ("add_reactions", True), ("use_external_emojis", True)
-                ]
-                for perm_name, req_val in requested_perms:
-                    if getattr(bot_permissions, perm_name, False):
-                        setattr(perms, perm_name, True)
-            else:
-                requested_perms = [
-                    ("view_channel", True), ("send_messages", True), ("read_message_history", True),
-                    ("attach_files", True), ("embed_links", True), ("add_reactions", True),
-                    ("use_external_emojis", True), ("change_nickname", True)
-                ]
-                for perm_name, req_val in requested_perms:
-                    if getattr(bot_permissions, perm_name, False):
-                        setattr(perms, perm_name, True)
-
-            new_role = await guild.create_role(
-                name=role_name,
-                color=discord.Color(color_hex),
-                permissions=perms,
-                hoist=True,
-                mentionable=True
-            )
-            created_roles[role_name] = new_role
-            roles_created_count += 1
-            await asyncio.sleep(0.15)
-        except discord.Forbidden:
+    @discord.ui.button(label="✅ Bestätigen", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction:discord.Interaction, button:discord.ui.Button):
+        if interaction.user.id != self.discord_id:
+            return await interaction.response.send_message("Nicht dein Verify!", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        ok = await check_bio_code(self.roblox_id, self.code)
+        if not ok:
+            emb = discord.Embed(title="❌ Code nicht gefunden",
+                description=f"Ich sehe `{self.code}` **nicht** in deiner Roblox Bio.\n\n1. https://www.roblox.com/users/{self.roblox_id}/profile\n2. Bearbeiten → Beschreibung → `{self.code}` einfügen\n3. Speichern → hier nochmal Bestätigen",
+                color=0xe74c3c)
+            return await interaction.followup.send(embed=emb, ephemeral=True)
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            await db.execute(
+                "INSERT INTO users(discord_id,roblox_id,roblox_name,verified,verified_at,coins) VALUES(?,?,?,?,CURRENT_TIMESTAMP,COALESCE((SELECT coins FROM users WHERE discord_id=?),0)) ON CONFLICT(discord_id) DO UPDATE SET roblox_id=excluded.roblox_id, roblox_name=excluded.roblox_name, verified=1, verified_at=CURRENT_TIMESTAMP",
+                (self.discord_id, self.roblox_id, self.roblox_name, self.discord_id))
+            await db.execute("DELETE FROM verify_codes WHERE discord_id=?", (self.discord_id,))
+            await db.commit()
+        if ROLE_VERIFIED:
             try:
-                new_role = await guild.create_role(
-                    name=role_name,
-                    color=discord.Color(color_hex),
-                    permissions=discord.Permissions.default(),
-                    hoist=True,
-                    mentionable=True
-                )
-                created_roles[role_name] = new_role
-                roles_created_count += 1
-                await asyncio.sleep(0.15)
-            except discord.Forbidden:
-                roles_failed_count += 1
-                logger.error(f"Konnte Rolle {role_name} überhaupt nicht erstellen.")
-        except Exception as e:
-            roles_failed_count += 1
-            logger.error(f"Fehler bei {role_name}: {e}")
-
-    if roles_failed_count > 0 and roles_created_count == 0 and roles_skipped_count == 0:
-        embed_warning = create_prestige_embed(
-            title="⚠️ FEHLER: Keine Rollen erstellt!",
-            description=f"> Es konnte **keine einzige Rolle** erstellt werden!\n\n"
-                        f"**Ursache:**\n"
-                        f"Dem Bot fehlt im Server die Berechtigung **'Rollen verwalten'** (Manage Roles).\n\n"
-                        f"**So behebst du diesen Fehler:**\n"
-                        f"1. Gehe in deine **Server-Einstellungen** ➔ **Rollen**.\n"
-                        f"2. Klicke auf die Rolle deines Bots (`𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣`).\n"
-                        f"3. Aktiviere die Berechtigung **'Rollen verwalten'** (oder Administrator).\n"
-                        f"4. Ziehe meine Rolle ganz nach oben.\n"
-                        f"5. Führe `!role` erneut aus.",
-            color=0xff003c,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await status_msg.edit(embed=embed_warning)
-        return
-
-    r_everyone = guild.default_role
-    r_member = created_roles.get("👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿") or r_everyone
-    r_customer = created_roles.get("🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿") or r_everyone
-    r_premium_buyer = created_roles.get("💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿") or r_everyone
-    r_vip = created_roles.get("🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣") or r_everyone
-    r_booster = created_roles.get("💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿") or r_everyone
-    r_partner = created_roles.get("🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿") or r_everyone
-    r_support = created_roles.get("🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁") or r_everyone
-    r_trial_mod = created_roles.get("🚨│ 𝗩𝗢𝗜𝗗 • 𝗧𝗿𝗶𝗮𝗹 𝗠𝗼𝗱") or r_everyone
-    r_mod = created_roles.get("🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿") or r_everyone
-    r_manager = created_roles.get("⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿") or r_everyone
-    r_admin = created_roles.get("🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻") or r_everyone
-    r_co_owner = created_roles.get("👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿") or r_everyone
-    r_owner = created_roles.get("👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿") or r_everyone
-
-    progress_embed.description = f"> 👑 Rollen geprüft: **{roles_created_count} erstellt**, **{roles_skipped_count} übersprungen**.\n> 🔒 Setze jetzt Berechtigungen für alle Kanäle..."
-    await status_msg.edit(embed=progress_embed)
-
-    stats_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, connect=False)}
-    verify_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)}
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner, r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: verify_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
-
-    info_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: info_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
-        if r != r_everyone: info_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
-
-    community_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: community_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
-        if r != r_everyone: community_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True, add_reactions=True, read_message_history=True)
-
-    staff_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
-        if r != r_everyone: staff_overwrites[r] = discord.PermissionOverwrite(view_channel=False)
-    for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: staff_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
-    log_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner, r_support, r_trial_mod, r_mod]:
-        if r != r_everyone: log_overwrites[r] = discord.PermissionOverwrite(view_channel=False)
-    for r in [r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: log_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
-    channels_processed = 0
-    for channel in guild.channels:
-        try:
-            if channel.category and "LOGS" in channel.category.name.upper():
-                await channel.edit(overwrites=log_overwrites)
-            elif channel.category and "STAFF" in channel.category.name.upper():
-                await channel.edit(overwrites=staff_overwrites)
-            elif channel.category and "STATS" in channel.category.name.upper():
-                await channel.edit(overwrites=stats_overwrites)
-            elif (channel.category and "VERIFY" in channel.category.name.upper()) or channel.name in ["👋│willkommen", "willkommen", "🔐│verify-here", "verify-here"]:
-                await channel.edit(overwrites=verify_overwrites)
-            elif channel.category and ("INFO" in channel.category.name.upper() or "SHOP" in channel.category.name.upper() or "SUPPORT" in channel.category.name.upper() or "CHAT" in channel.category.name.upper() or "TALK" in channel.category.name.upper()):
-                await channel.edit(overwrites=info_overwrites if "CHAT" not in channel.category.name.upper() and "TALK" not in channel.category.name.upper() else community_overwrites)
-            channels_processed += 1
-            await asyncio.sleep(0.1)
-        except Exception:
-            pass
-
-    success_embed = create_prestige_embed(
-        title="🎉 Rollen & Rechte-Setup beendet!",
-        description=f"> 👑 **Rollen erstellt:** {roles_created_count}\n"
-                    f"> 👑 **Rollen übersprungen:** {roles_skipped_count}\n"
-                    f"> 🔒 **Kanäle konfiguriert:** {channels_processed}\n\n"
-                    f"Alle Berechtigungen wurden für deine 23 Rollen optimal eingestellt!",
-        color=0x39ff14,
-        author_user=ctx.author,
-        bot_user=bot.user
-    )
-    await status_msg.edit(embed=success_embed)
-
-
-# --- SETUP CONFIRMATION VIEW & COMMAND (!Start) ---
-
-class SetupConfirmationView(discord.ui.View):
-    def __init__(self, ctx):
-        super().__init__(timeout=60)
-        self.ctx = ctx
-        self.value = None
-
-    @discord.ui.button(label="🧹 Komplett neu aufsetzen", style=discord.ButtonStyle.danger, emoji="🧹")
-    async def reset_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("Das kannst du nicht entscheiden!", ephemeral=True)
-            return
-        await interaction.response.defer()
-        self.value = "reset"
+                role = interaction.guild.get_role(ROLE_VERIFIED)
+                if role: await interaction.user.add_roles(role, reason="Roblox Bio Verify")
+            except: pass
+        await add_coins(self.discord_id, COIN_REWARDS["verify"], "verify")
+        emb = discord.Embed(title="✅ Verifiziert!",
+            description=f"Willkommen **{self.roblox_name}**!\nRoblox ID: `{self.roblox_id}`\n\n+{COIN_REWARDS['verify']} Void-Coins gutgeschrieben!",
+            color=0x2ecc71)
+        await interaction.followup.send(embed=emb, ephemeral=True)
+        log_emb = make_embed("🔐 Verify Erfolg", f"{interaction.user.mention} → **{self.roblox_name}** (`{self.roblox_id}`)\nCode: `{self.code}`", 0x2ecc71, interaction.user)
+        await send_log(bot, "verify", log_emb, discord_id=self.discord_id)
         self.stop()
 
-    @discord.ui.button(label="➕ Nur hinzufügen", style=discord.ButtonStyle.success, emoji="➕")
-    async def add_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("Das kannst du nicht entscheiden!", ephemeral=True)
-            return
-        await interaction.response.defer()
-        self.value = "add"
+    @discord.ui.button(label="❌ Abbrechen", style=discord.ButtonStyle.red)
+    async def cancel(self, interaction:discord.Interaction, button:discord.ui.Button):
+        if interaction.user.id != self.discord_id:
+            return await interaction.response.send_message("Nicht dein Verify!", ephemeral=True)
+        await interaction.response.send_message("Abgebrochen.", ephemeral=True)
         self.stop()
 
-    @discord.ui.button(label="❌ Abbrechen", style=discord.ButtonStyle.secondary, emoji="❌")
-    async def cancel_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("Das kannst du nicht entscheiden!", ephemeral=True)
-            return
-        await interaction.response.defer()
-        self.value = "cancel"
-        self.stop()
-
-
-@bot.command(name="invites", aliases=["Invites", "einladungen", "invite"])
-@commands.guild_only()
-async def check_invites_command(ctx, target_user: discord.Member = None):
-    """Zeigt an, wie viele Einladungen ein User insgesamt besitzt."""
-    user = target_user or ctx.author
-    guild = ctx.guild
-    
-    total_invs = 0
-    inv_codes = []
-    try:
-        guild_invites = await guild.invites()
-        for inv in guild_invites:
-            if inv.inviter and inv.inviter.id == user.id:
-                total_invs += inv.uses
-                inv_codes.append(f"`{inv.code}` ({inv.uses}x)")
-    except Exception:
-        pass
-        
-    codes_str = ", ".join(inv_codes) if inv_codes else "*Keine aktiven Links*"
-    
-    embed = create_prestige_embed(
-        title=f"📩 Invite-Statistik: {user.name}",
-        description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-                    f"> 📈 **Gesamte Einladungen:** `{total_invs}`\n\n"
-                    f"**Aktive Invite-Links:**\n"
-                    f"> {codes_str}\n\n"
-                    f"*Lade weitere Freunde ein, um dir im Kanal <#invites_id> Prämien abzuholen!*",
-        color=0x00f0ff,
-        author_user=user,
-        bot_user=bot.user
-    )
-    inv_channel = discord.utils.get(guild.text_channels, name="📩│invites") or discord.utils.get(guild.text_channels, name="invites")
-    if inv_channel:
-        embed.description = embed.description.replace("<#invites_id>", inv_channel.mention)
-    else:
-        embed.description = embed.description.replace("<#invites_id>", "`#invites`")
-        
-    embed.set_thumbnail(url=user.display_avatar.url)
-    await ctx.send(embed=embed)
-
-
-@bot.command(name="Start", aliases=["start"])
-@commands.guild_only()
-@commands.has_permissions(administrator=True)
-async def start(ctx):
-    """
-    Richtet den kompletten Server mit allen Kategorien, Kanälen und Logs ein.
-    Nutzbar nach '!role', um das volle Layout zu erstellen.
-    """
-    embed_choice = create_prestige_embed(
-        title="⚠️ 𝗩𝗢𝗜𝗗 • SERVER SETUP INITIALISIERUNG ⚠️",
-        description=f"Hallo {ctx.author.mention},\n\ndu bist dabei, das **Prestige Server-Layout** für **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣** aufzubauen.\n"
-                    f"Dieses Setup generiert:\n"
-                    f"> 📁 │ **7 Hauptkategorien, 1 Log-Kategorie & 1 Stats-Kategorie**\n"
-                    f"> 💬 │ **27 Textkanäle, 7 Voicekanäle & 7 professionelle Log-Kanäle (Gesamt: 41 Kanäle)**\n"
-                    f"> ⚙️ │ **Vollständiges Embed-Design in allen Infokanälen**\n\n"
-                    f"Bitte wähle eine Option aus:\n\n"
-                    f"🧹 **Komplett neu aufsetzen:** Löscht alle Kanäle (außer den aktuellen) und baut neu auf.\n"
-                    f"➕ **Nur hinzufügen:** Ergänzt das Layout parallel.",
-        color=0xff003c,
-        author_user=ctx.author,
-        bot_user=bot.user
-    )
-    
-    view = SetupConfirmationView(ctx)
-    confirm_msg = await ctx.send(embed=embed_choice, view=view)
-
-    await view.wait()
-
-    if view.value is None or view.value == "cancel":
-        embed_cancel = create_prestige_embed(
-            title="❌ Setup abgebrochen",
-            description="> Das Server-Setup wurde abgebrochen. Es wurden keine Kanäle erstellt.",
-            color=0x3e3e3e,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await confirm_msg.edit(embed=embed_cancel, view=None)
-        return
-
-    status_embed = create_prestige_embed(
-        title="⚙️ Setup-Prozess läuft...",
-        description="> Lösche alte Kanäle (sofern ausgewählt)...",
-        color=0x00f0ff,
-        author_user=ctx.author,
-        bot_user=bot.user
-    )
-    status_msg = await ctx.send(embed=status_embed)
-    await confirm_msg.delete()
-
-    guild = ctx.guild
-
-    if view.value == "reset":
-        for channel in guild.channels:
-            if channel.id != ctx.channel.id:
-                try:
-                    await channel.delete()
-                    await asyncio.sleep(0.1)
-                except Exception:
-                    pass
-
-    # Berechtigungs-Gruppen definieren
-    r_everyone = guild.default_role
-    r_member = discord.utils.get(guild.roles, name="👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿") or r_everyone
-    r_customer = discord.utils.get(guild.roles, name="🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿") or r_everyone
-    r_premium_buyer = discord.utils.get(guild.roles, name="💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿") or r_everyone
-    r_vip = discord.utils.get(guild.roles, name="🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜package") or r_everyone
-    r_booster = discord.utils.get(guild.roles, name="💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿") or r_everyone
-    r_partner = discord.utils.get(guild.roles, name="🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿") or r_everyone
-    r_support = discord.utils.get(guild.roles, name="🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁") or r_everyone
-    r_trial_mod = discord.utils.get(guild.roles, name="🚨│ 𝗩𝗢𝗜𝗗 • 𝗧𝗿𝗶𝗮𝗹 𝗠𝗼𝗱") or r_everyone
-    r_mod = discord.utils.get(guild.roles, name="🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿") or r_everyone
-    r_manager = discord.utils.get(guild.roles, name="⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿") or r_everyone
-    r_admin = discord.utils.get(guild.roles, name="🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻") or r_everyone
-    r_co_owner = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿") or r_everyone
-    r_owner = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿") or r_everyone
-
-    stats_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, connect=False)}
-    verify_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)}
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner, r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: verify_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
-
-    info_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: info_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
-        if r != r_everyone: info_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
-
-    community_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: community_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
-        if r != r_everyone: community_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True, add_reactions=True, read_message_history=True)
-
-    staff_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
-        if r != r_everyone: staff_overwrites[r] = discord.PermissionOverwrite(view_channel=False)
-    for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: staff_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
-    # Höchstsensible Log-Rechte (Nur Manager+)
-    log_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner, r_support, r_trial_mod, r_mod]:
-        if r != r_everyone: log_overwrites[r] = discord.PermissionOverwrite(view_channel=False)
-    for r in [r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: log_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
-    status_embed.description = "> 📁 Erstelle Server-Struktur & 41 Kanäle..."
-    await status_msg.edit(embed=status_embed)
-
-    categories_layout = [
-        {
-            "name": "📊│── 𝗩𝗢𝗜𝗗 • 𝗦𝗧𝗔𝗧𝗦 ──",
-            "overwrites": stats_overwrites,
-            "channels": [
-                {"name": "👥│Mitglieder: 0", "type": "voice", "description": ""},
-                {"name": "💎│Booster: 0", "type": "voice", "description": ""},
-                {"name": "🛒│Kunden: 0", "type": "voice", "description": ""},
-                {"name": "🎟️│Offene Tickets: 0", "type": "voice", "description": ""}
-            ]
-        },
-        {
-            "name": "🔐│── 𝗩𝗢𝗜𝗗 • 𝗩𝗘𝗥𝗜𝗙𝗬 ──",
-            "overwrites": verify_overwrites,
-            "channels": [
-                {"name": "👋│willkommen", "type": "text", "description": "Begrüßungskanal für neue Mitglieder"},
-                {"name": "🔐│verify-here", "type": "text", "description": "Klicke unten auf den Button, um dich freizuschalten!"}
-            ]
-        },
-        {
-            "name": "📢│── 𝗩𝗢𝗜𝗗 • 𝗜𝗡𝗙𝗢 ──",
-            "overwrites": info_overwrites,
-            "channels": [
-                {"name": "📢│news", "type": "text", "description": "Wichtige Ankündigungen & News"},
-                {"name": "📜│rules", "type": "text", "description": "Das Serverregelwerk"},
-                {"name": "💨│aufwiedersehen", "type": "text", "description": "Verabschiedungskanal"},
-                {"name": "🎁│giveaways", "type": "text", "description": "Spannende Giveaways & Gewinne"},
-                {"name": "🤝│vouches", "type": "text", "description": "Erfahrungen unserer Käufer"},
-                {"name": "📩│invites", "type": "text", "description": "Lade Freunde ein für Belohnungen!"},
-                {"name": "🔗│partners", "type": "text", "description": "Unsere Partner-Server"}
-            ]
-        },
-        {
-            "name": "🛒│── 𝗩𝗢𝗜𝗗 • 𝗦𝗛𝗢𝗣 ──",
-            "overwrites": info_overwrites,
-            "channels": [
-                {"name": "👕│tshirt-templates", "type": "text", "description": "Exklusive T-Shirt Vorlagen für Roblox"},
-                {"name": "⚙️│fastflags", "type": "text", "description": "FPS & Performance Optimierungen"},
-                {"name": "🖥️│discord-templates", "type": "text", "description": "Schicke Discord Server Vorlagen"},
-                {"name": "📦│products", "type": "text", "description": "Unsere Produkt- & Preisübersicht"},
-                {"name": "🛒│how-to-buy", "type": "text", "description": "Wie du bei uns einkaufen kannst"},
-                {"name": "📈│updates", "type": "text", "description": "Entwicklungs-Updates & Produktnews"},
-                {"name": "🛍️│live-käufe", "type": "text", "description": "Live Feier-Ticker für erfolgreiche Shop-Käufe"}
-            ]
-        },
-        {
-            "name": "💬│── 𝗩𝗢𝗜𝗗 • 𝗖𝗛𝗔𝗧 ──",
-            "overwrites": community_overwrites,
-            "channels": [
-                {"name": "💬│general-chat", "type": "text", "description": "Der Hauptchat für jedermann"},
-                {"name": "📷│media-and-showcase", "type": "text", "description": "Teile Bilder, Videos oder Avatare"},
-                {"name": "🎨│clothing-showcase", "type": "text", "description": "Zeige deine eigenen Roblox-Kleidungsdesigns!"},
-                {"name": "🖥️│setup-showcase", "type": "text", "description": "Zeige deinen Gaming-Setup oder Studio-Setup"},
-                {"name": "📈│trading", "type": "text", "description": "Tausche und handle mit Roblox-Gegenständen"},
-                {"name": "🤝│suggestions", "type": "text", "description": "Deine Verbesserungsvorschläge für den Shop"},
-                {"name": "🤖│bot-commands", "type": "text", "description": "Nutze die Bot-Befehle hier"}
-            ]
-        },
-        {
-            "name": "🎙️│── 𝗩𝗢𝗜𝗗 • 𝗧𝗔𝗟𝗞 ──",
-            "overwrites": community_overwrites,
-            "channels": [
-                {"name": "🔊│Lobby • Public", "type": "voice", "description": ""},
-                {"name": "🔊│Lounge • Chill", "type": "voice", "description": ""},
-                {"name": "🔊│Roblox • Talk", "type": "voice", "description": ""},
-                {"name": "🔊│Gaming • Duo", "type": "voice", "description": ""},
-                {"name": "🔊│Gaming • Squad", "type": "voice", "description": ""},
-                {"name": "🔊│Support • Voice", "type": "voice", "description": ""}
-            ]
-        },
-        {
-            "name": "💎│── 𝗩𝗢𝗜𝗗 • 𝗟𝗢𝗨𝗡𝗚𝗘 ──",
-            "overwrites": community_overwrites,
-            "channels": [
-                {"name": "💎│booster-lounge", "type": "text", "description": "Spezialchat für Server-Booster", "custom_overwrites": "booster"},
-                {"name": "🌟│vip-lounge", "type": "text", "description": "Exklusiver Chat für VIP-Kunden", "custom_overwrites": "vip"},
-                {"name": "🛒│customer-lounge", "type": "text", "description": "Austauschbereich für alle Käufer", "custom_overwrites": "customer"}
-            ]
-        },
-        {
-            "name": "🎟️│── 𝗩𝗢𝗜𝗗 • 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 ──",
-            "overwrites": info_overwrites,
-            "channels": [
-                {"name": "🎟️│create-ticket", "type": "text", "description": "Erstelle ein Support- oder Kauf-Ticket"},
-                {"name": "❓│faq", "type": "text", "description": "Häufig gestellte Fragen (FAQs)"}
-            ]
-        },
-        {
-            "name": "🔒│── 𝗩𝗢𝗜𝗗 • 𝗦𝗧𝗔𝗙𝗙 ──",
-            "overwrites": staff_overwrites,
-            "channels": [
-                {"name": "🔒│staff-chat", "type": "text", "description": "Das interne Besprechungszimmer"},
-                {"name": "🛠️│mod-commands", "type": "text", "description": "Eingabe von Admin- und Moderations-Commands"},
-                {"name": "🔊│Staff • Voice", "type": "voice", "description": ""}
-            ]
-        },
-        {
-            "name": "📁│── 𝗩𝗢𝗜𝗗 • 𝗟𝗢𝗚𝗦 ──",
-            "overwrites": log_overwrites,
-            "channels": [
-                {"name": "💬│voice-logs", "type": "text", "description": "Logs für Sprachkanäle"},
-                {"name": "🔨│ban-kick-logs", "type": "text", "description": "Logs für Banns, Kicks und Timeouts"},
-                {"name": "📝│message-logs", "type": "text", "description": "Logs für gelöschte & editierte Nachrichten"},
-                {"name": "📩│invite-logs", "type": "text", "description": "Logs für erstellte & genutzte Einladungslinks"},
-                {"name": "📥│join-leave-logs", "type": "text", "description": "Logs für Serverbeitritte & Austritte"},
-                {"name": "💾│ticket-logs", "type": "text", "description": "Ticket-Protokolle & Transkripte"},
-                {"name": "⚙️│system-logs", "type": "text", "description": "System-Logs für Kanäle & Rollen"},
-                {"name": "🚨│security-logs", "type": "text", "description": "Logs für blockierte Scam- & Phishing-Links"}
-            ]
-        }
-    ]
-
-    channels_by_name = {}
-
-    for cat_data in categories_layout:
-        category = discord.utils.get(guild.categories, name=cat_data["name"])
-        if not category:
-            try:
-                category = await guild.create_category(name=cat_data["name"], overwrites=cat_data["overwrites"])
-                await asyncio.sleep(0.2)
-            except discord.Forbidden:
-                embed_err = create_prestige_embed(
-                    title="⚠️ FEHLER: Keine Kanäle erstellt!",
-                    description=f"> Ich habe keine Berechtigung, Kategorien oder Kanäle zu erstellen!\n\n"
-                                f"**Behebung:**\n"
-                                f"Bitte stelle sicher, dass mein Bot die Berechtigung **'Kanäle verwalten'** (Manage Channels) oder **'Administrator'** besitzt und führe `!Start` erneut aus.",
-                    color=0xff003c,
-                    author_user=ctx.author,
-                    bot_user=bot.user
-                )
-                await status_msg.edit(embed=embed_err)
-                return
-            except Exception as e:
-                logger.error(f"Fehler bei Kategorie {cat_data['name']}: {e}")
-                continue
-        
-        for ch_data in cat_data["channels"]:
-            current_overwrites = cat_data["overwrites"].copy()
-            
-            # Custom Overwrites für Lounges
-            if ch_data.get("custom_overwrites") == "booster":
-                current_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-                for r in [r_member, r_customer, r_premium_buyer, r_vip]:
-                    if r != r_everyone: current_overwrites[r] = discord.PermissionOverwrite(view_channel=False)
-                if r_booster != r_everyone: current_overwrites[r_booster] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-                    if r != r_everyone: current_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                
-            elif ch_data.get("custom_overwrites") == "vip":
-                current_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-                for r in [r_member, r_customer, r_premium_buyer]:
-                    if r != r_everyone: current_overwrites[r] = discord.PermissionOverwrite(view_channel=False)
-                if r_booster != r_everyone: current_overwrites[r_booster] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                if r_vip != r_everyone: current_overwrites[r_vip] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-                    if r != r_everyone: current_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-
-            elif ch_data.get("custom_overwrites") == "customer":
-                current_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-                if r_member != r_everyone: current_overwrites[r_member] = discord.PermissionOverwrite(view_channel=False)
-                if r_booster != r_everyone: current_overwrites[r_booster] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                if r_customer != r_everyone: current_overwrites[r_customer] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                if r_premium_buyer != r_everyone: current_overwrites[r_premium_buyer] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                if r_vip != r_everyone: current_overwrites[r_vip] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-                    if r != r_everyone: current_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-
-            if ch_data["type"] == "voice":
-                channel = discord.utils.get(category.voice_channels, name=ch_data["name"])
-                if not channel:
-                    try:
-                        channel = await guild.create_voice_channel(
-                            name=ch_data["name"],
-                            category=category,
-                            overwrites=current_overwrites
-                        )
-                        await asyncio.sleep(0.15)
-                    except Exception as e:
-                        logger.error(f"Fehler bei Voice-Kanal {ch_data['name']}: {e}")
-                        continue
-            else:
-                channel = discord.utils.get(category.text_channels, name=ch_data["name"])
-                if not channel:
-                    try:
-                        channel = await guild.create_text_channel(
-                            name=ch_data["name"],
-                            category=category,
-                            overwrites=current_overwrites,
-                            topic=ch_data["description"]
-                        )
-                        await asyncio.sleep(0.15)
-                    except Exception as e:
-                        logger.error(f"Fehler bei Text-Kanal {ch_data['name']}: {e}")
-                        continue
-            channels_by_name[ch_data["name"]] = channel
-
-    # 5. SCHRITT: Kanäle befüllen (Embeds mit 1000x schönem Layout)
-    status_embed.description = "> 📝 Richte detaillierte Infokanäle, FAQs und Einladungs-Systeme ein..."
-    await status_msg.edit(embed=status_embed)
-
-    c_ticket_mention = channels_by_name["🎟️│create-ticket"].mention if "🎟️│create-ticket" in channels_by_name else "#create-ticket"
-    c_ff_mention = channels_by_name["⚙️│fastflags"].mention if "⚙️│fastflags" in channels_by_name else "#fastflags"
-
-    # A) REGELN
-    c_rules = channels_by_name.get("📜│rules")
-    if c_rules:
-        embed_rules = create_prestige_embed(
-            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n📜 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 - SERVER REGELN\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
-            description="Um eine sichere, professionelle und angenehme Atmosphäre für alle Kunden und Creator zu gewährleisten, bitten wir dich, die folgenden Richtlinien einzuhalten:\n\n"
-                        "🤖 │ **𝟭. 𝗥𝗲𝘀𝗽𝗲𝗸𝘁 & 𝗛ö𝗳𝗹𝗶𝗰𝗵𝗸𝗲𝗶𝘁**\n"
-                        "> Behandle jedes Mitglied und jeden Staff mit vollstem Respekt. Beleidigungen, Toxizität, Belästigung oder Drohungen jeglicher Art führen zum sofortigen Serverausschluss.\n\n"
-                        "🚫 │ **𝟮. 𝗞𝗲𝗶𝗻 𝗦𝗽𝗮𝗺 & 𝗙𝗿𝗲𝗺𝗱𝘄𝗲𝗿𝗯𝘂𝗻𝗴**\n"
-                        "> Spamming in den Kanälen ist verboten. Das Posten von Werbelinks zu anderen Discord-Servern, Dienstleistungen oder Fremdprodukten (sowohl in Chats als auch per DM) wird permanent gebannt.\n\n"
-                        "🛒 │ **𝟯. 𝗦𝗶𝗰𝗵𝗲𝗿𝗲𝗿 & 𝗢𝗳𝗳𝗶𝘇𝗶𝗲𝗹𝗹𝗲𝗿 𝗛𝗮𝗻𝗱𝗲𝗹**\n"
-                        "> Jegliche Verkäufe und Dienstleistungen finden ausschließlich über unser offizielles Ticket-System in %s statt. Privater Handel oder das Anbieten eigener Produkte ist untersagt.\n\n"
-                        "📎 │ **𝟰. 𝗡𝗦𝗙𝗪 & Unangemessene Inhalte**\n"
-                        "> Keine jugendgefährdenden, pornografischen, gewaltverherrlichenden oder illegalen Medien.\n\n"
-                        "📌 │ **𝗛𝗶𝗻𝘄𝗲𝗶𝘀**\n"
-                        "> Mit dem Aufenthalt auf diesem Server akzeptierst du die Discord Nutzungsbedingungen (TOS) sowie unsere Serverregeln. Unsere Moderatoren haben das Recht, bei Verstößen ohne Vorwarnung einzugreifen." % c_ticket_mention,
-            color=0xff003c,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await c_rules.send(embed=embed_rules)
-
-    # B) HOW TO BUY
-    c_buy = channels_by_name.get("🛒│how-to-buy")
-    if c_buy:
-        embed_buy = create_prestige_embed(
-            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n🛒 𝗩𝗢𝗜𝗗 • 𝗪𝗜𝗘 𝗞𝗔𝗨𝗙𝗘 𝗜𝗖𝗛?\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
-            description="Der Ablauf eines Einkaufs bei **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣** ist vollständig automatisiert und absolut sicher. Folge einfach diesem einfachen Ablauf:\n\n"
-                        "1️⃣ │ **Ticket erstellen**\n"
-                        f"> Besuche den Kanal {c_ticket_mention} und klicke auf den Button **'Produkt kaufen'**. Ein privater Supportkanal wird nur für dich erstellt.\n\n"
-                        "2️⃣ │ **Produktdetails angeben**\n"
-                        "> Teile unserem Supportteam im Ticket mit, was du kaufen möchtest (z.B. Premium FastFlags, bestimmte T-Shirt Templates, Serverlayouts).\n\n"
-                        "3️⃣ │ **Zahlungsabwicklung**\n"
-                        "> Wähle deine bevorzugte Zahlungsmethode aus. Wir unterstützen:\n"
-                        "> 🔹 PayPal (Familie & Freunde)\n"
-                        "> 🔹 Robux (via Gamepass oder Gruppen-Auszahlung)\n"
-                        "> 🔹 Paysafecard\n"
-                        "> 🔹 Kryptowährungen (Litecoin - LTC, Bitcoin - BTC, USDT)\n\n"
-                        "4️⃣ │ **Lieferung erhalten**\n"
-                        "> Nach der Zahlungsbestätigung wird dein digitales Produkt (Config, Code, PNG-Download) direkt im Ticket an dich übergeben!",
-            color=0x00f0ff,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await c_buy.send(embed=embed_buy)
-
-    # C) PRODUCTS
-    c_products = channels_by_name.get("📦│products")
-    if c_products:
-        embed_products = create_prestige_embed(
-            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n📦 𝗩𝗢𝗜𝗗 • 𝗨𝗡𝗦𝗘𝗥𝗘 𝗣𝗥𝗢𝗗𝗨𝗞𝗧𝗘\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
-            description="Finde hier deine Roblox- und Discord-Upgrades:\n\n"
-                        "**👕 Roblox Kleidung:**\n"
-                        "> • *Klassische T-Shirt PNGs:* ab 50 Robux / 0,50€\n"
-                        "> • *Exklusive Bundles (50+ Vorlagen):* ab 500 Robux / 5,00€\n\n"
-                        "**⚙️ FastFlags (FPS-Boost):**\n"
-                        f"> • *Standard-Configs:* Gratis (siehe {c_ff_mention})\n"
-                        f"> • *Premium Ultra Configs:* 150 Robux / 1,50€\n\n"
-                        "**🖥️ Discord Templates:**\n"
-                        "> • *Fertiges Shop-Layout:* 400 Robux / 4,00€",
-            color=0xffd700,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await c_products.send(embed=embed_products)
-
-    # D) TICKET PANEL
-    c_ticket_panel = channels_by_name.get("🎟️│create-ticket")
-    if c_ticket_panel:
-        embed_ticket_panel = create_prestige_embed(
-            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n🎟️ 𝗩𝗢𝗜𝗗 • Support & Kauf-Center\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
-            description="Benötigst du Hilfe oder möchtest etwas kaufen?\n"
-                        "Wähle einfach die passende Kategorie aus:\n\n"
-                        "> 🛒 │ **Produkt kaufen** ➔ Roblox Items, FastFlags, Templates\n"
-                        "> ⚙️ │ **Allgemeiner Support** ➔ Technische Hilfe\n"
-                        "> 🤝 │ **Partnerschaft** ➔ Für Kooperationen",
-            color=0x00f0ff,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await c_ticket_panel.send(embed=embed_ticket_panel, view=TicketButton())
-
-    # E) FAQ
-    c_faq = channels_by_name.get("❓│faq")
-    if c_faq:
-        embed_faq = create_prestige_embed(
-            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n❓ 𝗩𝗢𝗜𝗗 • FAQ (Häufige Fragen)\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
-            description="**Sind FastFlags erlaubt?**\n"
-                        "> Ja, FastFlags sind Teil der offiziellen Roblox-Einstellungen. Es ist keine Cheat-Software!\n\n"
-                        "**Wie lange dauert die Lieferung?**\n"
-                        "> Fast immer innerhalb von 15 Minuten nach Zahlungseingang im Ticket.",
-            color=0x00f0ff,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await c_faq.send(embed=embed_faq)
-
-    # F) INVITES
-    c_inv = channels_by_name.get("📩│invites")
-    if c_inv:
-        embed_inv = create_prestige_embed(
-            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n📩 𝗩𝗢𝗜𝗗 • Invite Belohnungen\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
-            description="Lade Freunde auf unseren Server ein und staube dicke Gewinne ab:\n\n"
-                        "> 🎁 │ **5 Invites** ➔ Gratis T-Shirt Template\n"
-                        "> 🎁 │ **10 Invites** ➔ Gratis Premium FastFlags\n"
-                        "> 🎁 │ **20 Invites** ➔ Gratis Discord Server-Layout",
-            color=0xffa500,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await c_inv.send(embed=embed_inv)
-
-    # G) VERIFY HERE PANEL IN #verify-here
-    c_v_here = channels_by_name.get("🔐│verify-here")
-    if c_v_here:
-        embed_v_here = create_prestige_embed(
-            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n🔐 𝗩𝗢𝗜𝗗 • SERVEREINTRETEN VERIFIZIERUNG\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
-            description="Herzlich Willkommen bei **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣**!\n\n"
-                        "Um vollen Zugriff auf den Server (Chats, Produkte, Giveaways) zu erhalten, musst du dich verifizieren.\n\n"
-                        "**So einfach geht's:**\n"
-                        "> 1️⃣ │ Klicke unten auf den grünen Button **'Verifizieren 🔐'**.\n"
-                        "> 2️⃣ │ Du erhältst sofort die **Member-Rolle** und wirst freigeschaltet.\n\n"
-                        "*Hinweis: Für erweiterte Käufe kannst du zusätzlich die Roblox-Verifizierung nutzen!*",
-            color=0x39ff14,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await c_v_here.send(embed=embed_v_here, view=SimpleVerifyButton())
-
-    # H) FIRST VOUCH PREPARATION IN #vouches
-    c_vouches = channels_by_name.get("🤝│vouches")
-    if c_vouches:
-        embed_vouch_placeholder = create_prestige_embed(
-            title="🤝 𝗩𝗢𝗜𝗗 • 𝗞𝗨𝗡𝗗𝗘𝗡-𝗕𝗘𝗪𝗘𝗥𝗧𝗨𝗡𝗚𝗘𝗡 🤝",
-            description="Kundenzufriedenheit steht bei uns an oberster Stelle!\n\n"
-                        "Wenn du bei uns eingekauft hast, würden wir uns sehr über eine Bewertung freuen. "
-                        "Das hilft uns und stärkt das Vertrauen neuer Kunden.\n\n"
-                        "**Beispiel für eine Bewertung:**\n"
-                        "⭐ ⭐ ⭐ ⭐ ⭐ - *Sehr schneller Support, FastFlags funktionieren perfekt und habe direkt +120 FPS bekommen! Gerne wieder!*",
-            color=0xffd700,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await c_vouches.send(embed=embed_vouch_placeholder)
-
-    # Statistiken sofort updaten
-    await update_stats_channels(guild)
-
-    status_embed.title = "🎉 Server-Setup erfolgreich abgeschlossen! 🎉"
-    status_embed.description = (
-        f"> 📁 **Kategorien & Kanäle:** 41 Kanäle erfolgreich eingerichtet.\n"
-        f"> 🔒 **Rechte:** Hochsicheres, fehlerfreies Rechtesystem aktiv.\n"
-        f"> 🎟️ **Tickets:** Interaktive Multi-Tickets mit Claim-Funktion sind einsatzbereit!\n\n"
-        f"Nutze `!Start` oder lösche diese Nachricht, falls gewünscht."
-    )
-    status_embed.color = 0x39ff14
-    await status_msg.edit(embed=status_embed)
-
-
-# --- AUTOMATISCHES DETEILLIERTES LOGGING & SECURITY ---
-
+# ---------- EVENTS ----------
 @bot.event
-async def on_message(message):
-    if not message.guild or message.author.bot:
-        await bot.process_commands(message)
-        return
+async def on_ready():
+    print(f"""
+ \033[91m
+ ██╗   ██╗ ██████╗ ██╗██████╗     ███████╗██╗  ██╗ ██████╗ ██████╗ 
+ ██║   ██║██╔═══██╗██║██╔══██╗    ██╔════╝██║  ██║██╔═══██╗██╔══██╗
+ ██║   ██║██║   ██║██║██║  ██║    ███████╗███████║██║   ██║██████╔╝
+ ╚██╗ ██╔╝██║   ██║██║██║  ██║    ╚════██║██╔══██║██║   ██║██╔═══╝ 
+  ╚████╔╝ ╚██████╔╝██║██████╔╝    ███████║██║  ██║╚██████╔╝██║     
+   ╚═══╝   ╚═════╝ ╚═╝╚═════╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝     
+ \033[0m
+  Void_Shop v1.0 ALL-IN-ONE
+  Bot: {bot.user} ({bot.user.id})
+  Guilds: {len(bot.guilds)}
+  Latency: {round(bot.latency*1000)}ms
 
-    # Anti-Scam Link Filter
-    is_staff = message.author.guild_permissions.manage_messages or any(r.name in ["👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿", "👑│ 𝗩𝗢𝗜𝗗 • 𝗖ｏ-𝗢𝘄𝗻𝗲𝗿", "🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻", "🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿", "🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁"] for r in message.author.roles)
+  Features:
+   🛍️ Auto-Delivery   🔐 Bio-Code-Auth   🚨 AntiScam
+   📈 FOMO Ticker      🪙 Void-Coins      👑 Web Dashboard
+   📜 12-Channel Logs
 
-    if not is_staff:
-        content_low = message.content.lower()
-        if any(x in content_low for x in ["http://", "https://", "www.", ".com", ".net", ".org", ".ru", ".xyz", "free robux", "discord.gg/"]):
-            allowed_domains = ["roblox.com", "discord.com", "youtube.com", "youtu.be", "tenor.com", "giphy.com", "railway.app", "void-shop"]
-            if not any(dom in content_low for dom in allowed_domains):
-                try:
-                    await message.delete()
-                    warn_em = create_prestige_embed(
-                        title="🚨 ANTI-SCAM SCHILD AKTIV",
-                        description=f"> {message.author.mention}, das Posten externer / unautorisierter Links oder Phishing-Begriffe ist hier verboten!",
-                        color=0xff003c,
-                        author_user=message.author,
-                        bot_user=bot.user
-                    )
-                    await message.channel.send(embed=warn_em, delete_after=10)
-                    db.add_scam_block()
-                    db.add_log('security', f'Scam-Link von {message.author.name} in #{message.channel.name} blockiert')
-
-                    sec_log = discord.utils.get(message.guild.text_channels, name="🚨│security-logs") or discord.utils.get(message.guild.text_channels, name="security-logs")
-                    if sec_log:
-                        lem = create_prestige_embed(
-                            title="🚨 Phishing / Scam blockiert",
-                            description=f"> **User:** {message.author.mention} ({message.author.name})\n"
-                                        f"> **Kanal:** {message.channel.mention}\n"
-                                        f"> **Blockierter Inhalt:** `{message.content}`",
-                            color=0xff003c
-                        )
-                        await sec_log.send(embed=lem)
-                except Exception:
-                    pass
-                return
-
-    await bot.process_commands(message)
-
-
-@bot.event
-async def on_message_delete(message):
-    """Loggt gelöschte Nachrichten."""
-    if not message.guild or message.author.bot:
-        return
-    log_channel = discord.utils.get(message.guild.text_channels, name="📝│message-logs")
-    if log_channel:
-        embed = create_prestige_embed(
-            title="🗑️ Nachricht gelöscht",
-            description=f"> **Kanal:** {message.channel.mention}\n"
-                        f"> **Autor:** {message.author.mention} ({message.author.name})\n\n"
-                        f"**Inhalt:**\n"
-                        f"> {message.content if message.content else '*Kein Text (z.B. Bild)*'}",
-            color=0xff003c,
-            author_user=message.author,
-            bot_user=bot.user
-        )
-        db.add_log('message', f'Nachricht in #{message.channel.name} gelöscht')
-        await log_channel.send(embed=embed)
-
-@bot.event
-async def on_message_edit(before, after):
-    """Loggt bearbeitete Nachrichten."""
-    if not before.guild or before.author.bot or before.content == after.content:
-        return
-    log_channel = discord.utils.get(before.guild.text_channels, name="📝│message-logs")
-    if log_channel:
-        embed = create_prestige_embed(
-            title="✏️ Nachricht bearbeitet",
-            description=f"> **Kanal:** {before.channel.mention}\n"
-                        f"> **Autor:** {before.author.mention} ({before.author.name})\n\n"
-                        f"**Zuvor:**\n"
-                        f"> {before.content}\n\n"
-                        f"**Danach:**\n"
-                        f"> {after.content}",
-            color=0x00f0ff,
-            author_user=before.author,
-            bot_user=bot.user
-        )
-        db.add_log('message', f'Nachricht von {before.author.name} in #{before.channel.name} bearbeitet')
-        await log_channel.send(embed=embed)
-
-@bot.event
-async def on_guild_channel_create(channel):
-    """Loggt erstellte Kanäle."""
-    log_channel = discord.utils.get(channel.guild.text_channels, name="⚙️│system-logs")
-    if log_channel:
-        moderator = None
-        try:
-            now = discord.utils.utcnow()
-            async for entry in channel.guild.audit_logs(action=discord.AuditLogAction.channel_create, limit=1):
-                if entry.target.id == channel.id and (now - entry.created_at).total_seconds() < 15:
-                    moderator = entry.user
-                    break
-        except Exception:
-            pass
-        embed = create_prestige_embed(
-            title="📁 Kanal erstellt",
-            description=f"> **Kanal:** {channel.name}\n"
-                        f"> **Kategorie:** {channel.category.name if channel.category else 'Keine'}\n"
-                        f"> **Mitarbeiter:** {moderator.mention if moderator else 'Unbekannt'}",
-            color=0x39ff14,
-            author_user=moderator if moderator else bot.user,
-            bot_user=bot.user
-        )
-        db.add_log('system', f'Kanal #{channel.name} erstellt')
-        await log_channel.send(embed=embed)
-
-@bot.event
-async def on_guild_channel_delete(channel):
-    """Loggt gelöschte Kanäle."""
-    log_channel = discord.utils.get(channel.guild.text_channels, name="⚙️│system-logs")
-    if log_channel:
-        moderator = None
-        try:
-            now = discord.utils.utcnow()
-            async for entry in channel.guild.audit_logs(action=discord.AuditLogAction.channel_delete, limit=1):
-                if entry.target.id == channel.id and (now - entry.created_at).total_seconds() < 15:
-                    moderator = entry.user
-                    break
-        except Exception:
-            pass
-        embed = create_prestige_embed(
-            title="🛑 Kanal gelöscht",
-            description=f"> **Kanal:** {channel.name}\n"
-                        f"> **Mitarbeiter:** {moderator.mention if moderator else 'Unbekannt'}",
-            color=0xff003c,
-            author_user=moderator if moderator else bot.user,
-            bot_user=bot.user
-        )
-        db.add_log('system', f'Kanal #{channel.name} gelöscht')
-        await log_channel.send(embed=embed)
-
-@bot.event
-async def on_guild_role_create(role):
-    """Loggt erstellte Rollen."""
-    log_channel = discord.utils.get(role.guild.text_channels, name="⚙️│system-logs")
-    if log_channel:
-        moderator = None
-        try:
-            now = discord.utils.utcnow()
-            async for entry in role.guild.audit_logs(action=discord.AuditLogAction.role_create, limit=1):
-                if entry.target.id == role.id and (now - entry.created_at).total_seconds() < 15:
-                    moderator = entry.user
-                    break
-        except Exception:
-            pass
-        embed = create_prestige_embed(
-            title="👑 Rolle erstellt",
-            description=f"> **Rolle:** {role.mention} ({role.name})\n"
-                        f"> **Mitarbeiter:** {moderator.mention if moderator else 'Unbekannt'}",
-            color=0x39ff14,
-            author_user=moderator if moderator else bot.user,
-            bot_user=bot.user
-        )
-        db.add_log('system', f'Rolle @{role.name} erstellt')
-        await log_channel.send(embed=embed)
-
-@bot.event
-async def on_guild_role_delete(role):
-    """Loggt gelöschte Rollen."""
-    log_channel = discord.utils.get(role.guild.text_channels, name="⚙️│system-logs")
-    if log_channel:
-        moderator = None
-        try:
-            now = discord.utils.utcnow()
-            async for entry in role.guild.audit_logs(action=discord.AuditLogAction.role_delete, limit=1):
-                if entry.target.id == role.id and (now - entry.created_at).total_seconds() < 15:
-                    moderator = entry.user
-                    break
-        except Exception:
-            pass
-        embed = create_prestige_embed(
-            title="🛑 Rolle gelöscht",
-            description=f"> **Rolle:** {role.name}\n"
-                        f"> **Mitarbeiter:** {moderator.mention if moderator else 'Unbekannt'}",
-            color=0xff003c,
-            author_user=moderator if moderator else bot.user,
-            bot_user=bot.user
-        )
-        db.add_log('system', f'Rolle @{role.name} gelöscht')
-        await log_channel.send(embed=embed)
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    """Loggt Voice-Kanal Wechsel."""
-    if member.bot:
-        return
-    log_channel = discord.utils.get(member.guild.text_channels, name="💬│voice-logs")
-    if not log_channel:
-        return
-
-    db.add_log('voice', f'{member.name} änderte Sprachkanal')
-    if before.channel is None and after.channel is not None:
-        embed = create_prestige_embed(
-            title="🔊 Voice-Kanal betreten",
-            description=f"> {member.mention} hat den Sprachkanal {after.channel.mention} betreten.",
-            color=0x39ff14,
-            author_user=member,
-            bot_user=bot.user
-        )
-        await log_channel.send(embed=embed)
-    elif before.channel is not None and after.channel is None:
-        embed = create_prestige_embed(
-            title="🔇 Voice-Kanal verlassen",
-            description=f"> {member.mention} hat den Sprachkanal {before.channel.mention} verlassen.",
-            color=0xff003c,
-            author_user=member,
-            bot_user=bot.user
-        )
-        await log_channel.send(embed=embed)
-    elif before.channel is not None and after.channel is not None and before.channel.id != after.channel.id:
-        embed = create_prestige_embed(
-            title="🔄 Voice-Kanal gewechselt",
-            description=f"> {member.mention} hat den Sprachkanal gewechselt.\n\n"
-                        f"**Von:** {before.channel.mention}\n"
-                        f"**Zu:** {after.channel.mention}",
-            color=0x00f0ff,
-            author_user=member,
-            bot_user=bot.user
-        )
-        await log_channel.send(embed=embed)
-
-@bot.event
-async def on_member_join(member):
-    """Loggt Serverbeitritte, sendet Willkommens-Embeds & Invite-Tracking."""
-    guild = member.guild
-    
-    # ✉️ NETTE BEGRÜSSUNG IM WILLKOMMENS-KANAL (DIZZY JOIN)
-    welcome_channel = discord.utils.get(guild.text_channels, name="👋│willkommen")
-    if welcome_channel:
-        embed_welcome_msg = create_prestige_embed(
-            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n👋 HERZLICH WILLKOMMEN BEI 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 👋\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
-            description=f"Hallo **{member.name}**! Schön, dass du da bist!\n"
-                        f"Wir freuen uns ungemein, dich auf unserem prestigeträchtigen Server begrüßen zu dürfen.\n\n"
-                        f"**Deine ersten Schritte:**\n"
-                        f"> 🔐 │ Schalte dich sofort frei im Kanal <#verify_channel_id_here> (oder `#verify-here`).\n"
-                        f"> 👤 │ Roblox-Verifizierung nutzen: `!verify <Username>`\n"
-                        f"> 🛒 │ Schalte exklusive Rollen frei mit: `!checkbuy <Username> <Gamepass_ID>`\n\n"
-                        f"📌 │ Du bist unser **{len(guild.members)}.** wertvolles Mitglied!\n"
-                        f"Genieße deinen Aufenthalt und hab eine tolle Zeit bei uns! ✨",
-            color=0x00f0ff,
-            author_user=member,
-            bot_user=bot.user
-        )
-        embed_welcome_msg.set_thumbnail(url=member.display_avatar.url)
-        # Suche den echten Kanal
-        v_channel = discord.utils.get(guild.text_channels, name="🔐│verify-here")
-        if v_channel:
-            embed_welcome_msg.description = embed_welcome_msg.description.replace("<#verify_channel_id_here>", v_channel.mention)
-        await welcome_channel.send(content=f"Hallo {member.mention}, schön dass du da bist! 👋", embed=embed_welcome_msg)
-
-    # Echtzeit Stats-Update bei Join
-    await update_stats_channels(guild)
-
-    # Standard-Logs befüllen
-    log_channel = discord.utils.get(guild.text_channels, name="📥│join-leave-logs")
-    invite_log_channel = discord.utils.get(guild.text_channels, name="📩│invite-logs")
-    
-    used_invite = None
-    try:
-        if guild.id in bot.invites_cache:
-            old_invites = bot.invites_cache[guild.id]
-            new_invites = await guild.invites()
-            bot.invites_cache[guild.id] = new_invites
-            
-            for old_inv in old_invites:
-                for new_inv in new_invites:
-                    if old_inv.code == new_inv.code and new_inv.uses > old_inv.uses:
-                        used_invite = new_inv
-                        break
-    except Exception:
-        pass
-
-    db.add_log('join_leave', f'{member.name} trat dem Server bei')
-    if log_channel:
-        embed = create_prestige_embed(
-            title="📥 Mitglied beigetreten",
-            description=f"> {member.mention} ({member.name}) hat den Server betreten.\n"
-                        f"> **Account-Erstellung:** {member.created_at.strftime('%Y-%m-%d %H:%M:%S')}",
-            color=0x39ff14,
-            author_user=member,
-            bot_user=bot.user
-        )
-        embed.set_thumbnail(url=member.display_avatar.url)
-        await log_channel.send(embed=embed)
-
-    if used_invite:
-        total_invs = 0
-        try:
-            curr_invs = bot.invites_cache.get(guild.id, [])
-            total_invs = sum(i.uses for i in curr_invs if i.inviter and i.inviter.id == used_invite.inviter.id)
-        except Exception:
-            total_invs = used_invite.uses
-
-        invites_pub_channel = discord.utils.get(guild.text_channels, name="📩│invites") or discord.utils.get(guild.text_channels, name="invites")
-        if invites_pub_channel:
-            embed_pub_inv = create_prestige_embed(
-                title="🎉 Neuer Server-Beitritt über Einladung!",
-                description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-                            f"> Herzlich willkommen, {member.mention}!\n\n"
-                            f"Eingeladen von: **{used_invite.inviter.mention}**\n"
-                            f"> 📈 **Gesamte Invites von {used_invite.inviter.name}:** `{total_invs}`\n\n"
-                            f"*Sammle ebenfalls Invites, um dir exklusive Belohnungen aus dem Shop zu sichern!*",
-                color=0x39ff14,
-                author_user=used_invite.inviter,
-                bot_user=bot.user
-            )
-            embed_pub_inv.set_thumbnail(url=member.display_avatar.url)
-            await invites_pub_channel.send(embed=embed_pub_inv)
-
-        if invite_log_channel:
-            embed_inv = create_prestige_embed(
-                title="📩 Einladung genutzt",
-                description=f"> {member.mention} ist beigetreten mit der Einladung von {used_invite.inviter.mention}.\n\n"
-                            f"**Code:** `{used_invite.code}`\n"
-                            f"**Code-Nutzungen:** {used_invite.uses}\n"
-                            f"**Gesamte Invites des Users:** `{total_invs}`",
-                color=0xffa500,
-                author_user=used_invite.inviter,
-                bot_user=bot.user
-            )
-            await invite_log_channel.send(embed=embed_inv)
-
-@bot.event
-async def on_member_remove(member):
-    """Loggt Austritte, Abschieds-Embeds & Kicks."""
-    guild = member.guild
-    
-    goodbye_channel = discord.utils.get(guild.text_channels, name="💨│aufwiedersehen")
-    if goodbye_channel:
-        embed_goodbye_msg = create_prestige_embed(
-            title="▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n💨 AUF WIEDERSEHEN...\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
-            description=f"> **{member.name}** hat uns verlassen.\n"
-                        f"> Wir wünschen dir alles Gute auf deinem weiteren Weg! 💨",
-            color=0xff003c,
-            author_user=member,
-            bot_user=bot.user
-        )
-        embed_goodbye_msg.set_thumbnail(url=member.display_avatar.url)
-        await goodbye_channel.send(embed=embed_goodbye_msg)
-
-    # Echtzeit Stats-Update bei Leave
-    await update_stats_channels(guild)
-
-    kicked_by = None
-    reason = "Kein Grund angegeben"
-
-    try:
-        now = discord.utils.utcnow()
-        async for entry in guild.audit_logs(action=discord.AuditLogAction.kick, limit=1):
-            if entry.target.id == member.id and (now - entry.created_at).total_seconds() < 15:
-                kicked_by = entry.user
-                reason = entry.reason if entry.reason else "Kein Grund angegeben"
-                break
-    except Exception:
-        pass
-
-    db.add_log('join_leave', f'{member.name} verließ den Server')
-    if kicked_by:
-        log_channel = discord.utils.get(guild.text_channels, name="🔨│ban-kick-logs")
-        if log_channel:
-            embed = create_prestige_embed(
-                title="👢 Mitglied gekickt",
-                description=f"> **Mitglied:** {member.name} ({member.id})\n"
-                            f"> **Moderator:** {kicked_by.mention}\n"
-                            f"> **Grund:** {reason}",
-                color=0xff003c,
-                author_user=kicked_by,
-                bot_user=bot.user
-            )
-            await log_channel.send(embed=embed)
-    else:
-        log_channel = discord.utils.get(guild.text_channels, name="📥│join-leave-logs")
-        if log_channel:
-            embed = create_prestige_embed(
-                title="📤 Mitglied verlassen",
-                description=f"> {member.mention} ({member.name}) hat den Server verlassen.",
-                color=0xff003c,
-                author_user=member,
-                bot_user=bot.user
-            )
-            await log_channel.send(embed=embed)
-
-@bot.event
-async def on_member_ban(guild, user):
-    """Loggt Banns."""
-    log_channel = discord.utils.get(guild.text_channels, name="🔨│ban-kick-logs")
-    if not log_channel:
-        return
-
-    banned_by = None
-    reason = "Kein Grund angegeben"
-
-    try:
-        now = discord.utils.utcnow()
-        async for entry in guild.audit_logs(action=discord.AuditLogAction.ban, limit=1):
-            if entry.target.id == user.id and (now - entry.created_at).total_seconds() < 15:
-                banned_by = entry.user
-                reason = entry.reason if entry.reason else "Kein Grund angegeben"
-                break
-    except Exception:
-        pass
-
-    embed = create_prestige_embed(
-        title="🔨 Mitglied gebannt",
-        description=f"> **Mitglied:** {user.name} ({user.id})\n"
-                    f"> **Moderator:** {banned_by.mention if banned_by else 'Unbekannt'}\n"
-                    f"> **Grund:** {reason}",
-        color=0xff003c,
-        author_user=banned_by if banned_by else user,
-        bot_user=bot.user
-    )
-    db.add_log('ban_kick', f'{user.name} wurde gebannt')
-    await log_channel.send(embed=embed)
-
-@bot.event
-async def on_member_update(before, after):
-    """Loggt Timeouts, Rollen-Updates und aktualisiert Stats-Kanäle in Echtzeit."""
-    guild = after.guild
-    
-    # 📊 ECHTZEIT STATS UPDATE BEI ROLLENÄNDERUNG ODER SUBSCRIPTION
-    if before.roles != after.roles or before.premium_since != after.premium_since:
-        await update_stats_channels(guild)
-
-    if before.timed_out_until != after.timed_out_until:
-        log_channel = discord.utils.get(guild.text_channels, name="🔨│ban-kick-logs")
-        if log_channel:
-            if after.timed_out_until is not None:
-                moderator = None
-                reason = "Kein Grund angegeben"
-                try:
-                    async for entry in guild.audit_logs(action=discord.AuditLogAction.member_update, limit=5):
-                        if entry.target.id == after.id and hasattr(entry.after, 'communication_disabled_until'):
-                            moderator = entry.user
-                            reason = entry.reason if entry.reason else "Kein Grund angegeben"
-                            break
-                except Exception:
-                    pass
-
-                embed = create_prestige_embed(
-                    title="⏳ Timeout verhängt (Stummgeschaltet)",
-                    description=f"> **Mitglied:** {after.mention}\n"
-                                f"> **Moderator:** {moderator.mention if moderator else 'Unbekannt'}\n"
-                                f"> **Bis:** {after.timed_out_until.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                                f"> **Grund:** {reason}",
-                    color=0xffa500,
-                    author_user=moderator if moderator else after,
-                    bot_user=bot.user
-                )
-                await log_channel.send(embed=embed)
-            else:
-                embed = create_prestige_embed(
-                    title="🔊 Timeout vorzeitig aufgehoben",
-                    description=f"> Der Timeout für {after.mention} wurde aufgehoben.",
-                    color=0x39ff14,
-                    author_user=after,
-                    bot_user=bot.user
-                )
-                await log_channel.send(embed=embed)
-
-
-# --- ERROR HANDLING ---
+  Dashboard: http://localhost:{DASHBOARD_PORT}
+""")
+    await send_log(bot, "bot", make_embed("🤖 Bot Online",
+        f"**{bot.user}** gestartet\nGuilds: {len(bot.guilds)}\nLatenz: {round(bot.latency*1000)}ms", 0x2ecc71))
 
 @bot.event
 async def on_command_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        embed_err = create_prestige_embed(
-            title="❌ Keine Berechtigung",
-            description="> Du benötigst Administrator-Berechtigungen auf diesem Server, um diesen Befehl auszuführen!",
-            color=0xff003c,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await ctx.send(embed=embed_err, delete_after=10)
-    elif isinstance(error, commands.NoPrivateMessage):
-        await ctx.send("Dieser Befehl kann nicht in Direktnachrichten ausgeführt werden.")
-    elif isinstance(error, commands.CommandNotFound):
-        pass
+    if isinstance(error, commands.CommandNotFound): return
+    if isinstance(error, commands.CommandOnCooldown):
+        return await ctx.send(f"⏳ Cooldown: {error.retry_after:.0f}s", delete_after=5)
+    if isinstance(error, commands.CheckFailure):
+        return await ctx.send("❌ Keine Berechtigung.", delete_after=5)
+    print(f"[ERR] {error}")
+    try: await ctx.send(f"⚠️ {error}", delete_after=15)
+    except: pass
+
+# --- LOGSYSTEM: JOIN/LEAVE ---
+@bot.event
+async def on_member_join(member):
+    emb = make_embed("📥 Mitglied beigetreten",
+        f"{member.mention} **{member}**\nAccount erstellt: <t:{int(member.created_at.timestamp())}:R>\nID: `{member.id}`",
+        0x2ecc71, member)
+    await send_log(bot, "join", emb, discord_id=member.id)
+
+@bot.event
+async def on_member_remove(member):
+    emb = make_embed("📤 Mitglied verlassen", f"**{member}**\n`{member.id}`", 0xe74c3c, member)
+    await send_log(bot, "join", emb, discord_id=member.id)
+
+# --- VOICE LOGS ---
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if before.channel == after.channel:
+        changes=[]
+        if before.self_mute != after.self_mute: changes.append(f"Mute {before.self_mute}→{after.self_mute}")
+        if before.self_deaf != after.self_deaf: changes.append(f"Deaf {before.self_deaf}→{after.self_deaf}")
+        if before.self_stream != after.self_stream: changes.append(f"Stream {before.self_stream}→{after.self_stream}")
+        if changes:
+            emb = make_embed("🎙️ Voice Update", f"{member.mention}\n"+"\n".join(changes), 0x3498db, member)
+            await send_log(bot,"voice",emb,discord_id=member.id,channel_id=(after.channel.id if after.channel else None))
+        return
+    if after.channel and not before.channel:
+        desc=f"{member.mention} → 🔊 **{after.channel.name}**"; color=0x2ecc71
+    elif before.channel and not after.channel:
+        desc=f"{member.mention} ← 🔊 **{before.channel.name}**"; color=0xe74c3c
     else:
-        logger.error(f"Ein Fehler ist aufgetreten: {error}")
+        desc=f"{member.mention} 🔀 **{before.channel.name}** → **{after.channel.name}**"; color=0xf39c12
+    emb = make_embed("🎙️ Voice", desc, color, member)
+    await send_log(bot,"voice",emb,discord_id=member.id,
+        channel_id=(after.channel.id if after.channel else before.channel.id if before.channel else None))
 
+# --- MESSAGE LOGS + ANTISCAM + VOUCH ---
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        await bot.process_commands(message); return
+    if message.guild:
+        # --- AntiScam ---
+        bad = scan_message_antiscam(message.content)
+        if bad:
+            try: await message.delete()
+            except: pass
+            try:
+                emb_warn = discord.Embed(title="🚨 Link blockiert – Anti-Scam",
+                    description="Dein Link wurde entfernt (nicht gewhitelistet).\n\n**Erlaubt:** `roblox.com`, `discord.com`, `discord.gg`, `youtube.com`, `github.com`",
+                    color=0xe74c3c)
+                await message.channel.send(f"{message.author.mention}", embed=emb_warn, delete_after=20)
+            except: pass
+            details = "\n".join([f"• `{b['url']}` → {b['reason']}" for b in bad])
+            log_emb = make_embed("🚨 AntiScam – Link gelöscht",
+                f"**User:** {message.author.mention}\n**Channel:** {message.channel.mention}\n\n{details}\n\n```{message.content[:800]}```",
+                0xe74c3c, message.author)
+            await send_log(bot,"antiscam",log_emb,discord_id=message.author.id,channel_id=message.channel.id,meta=str(bad))
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                for b in bad:
+                    await db.execute("INSERT INTO antiscam_hits(discord_id,channel_id,url,reason) VALUES(?,?,?,?)",
+                        (message.author.id, message.channel.id, b["url"], b["reason"]))
+                await db.commit()
+            return  # block further processing
+        # --- Vouch 5★ Coins ---
+        if "vouch" in message.channel.name.lower():
+            c = message.content.lower()
+            if message.content.count("⭐")>=5 or "5/5" in c or "5★" in c or "5 sterne" in c:
+                await add_coins(message.author.id, COIN_REWARDS["vouch_5star"], "vouch_5star")
+                async with aiosqlite.connect(DATABASE_PATH) as db:
+                    await db.execute("INSERT INTO vouches(discord_id,stars,message,coins_awarded) VALUES(?,?,?,?)",
+                        (message.author.id,5,message.content[:500],COIN_REWARDS["vouch_5star"]))
+                    await db.commit()
+                try:
+                    await message.add_reaction("✅")
+                    await message.reply(f"Danke für dein 5⭐ Vouch! +{COIN_REWARDS['vouch_5star']} Coins!", delete_after=15)
+                except: pass
+                log_emb = make_embed("🪙 Vouch belohnt",
+                    f"{message.author.mention} 5★ → +{COIN_REWARDS['vouch_5star']} Coins",0xFFD700,message.author)
+                await send_log(bot,"coins",log_emb,discord_id=message.author.id,channel_id=message.channel.id)
+    await bot.process_commands(message)
 
-# --- START DES BOTS ---
+@bot.event
+async def on_message_delete(message):
+    if message.author.bot or not message.guild: return
+    content = (message.content[:1000]+"…") if len(message.content)>1000 else message.content
+    emb = make_embed("🗑️ Nachricht gelöscht",
+        f"**Channel:** {message.channel.mention}\n**Author:** {message.author.mention}\n\n```{content or '[Embed/Attachment]'}```",
+        0xe74c3c, message.author)
+    await send_log(bot,"message",emb,discord_id=message.author.id,channel_id=message.channel.id,meta=message.content)
+
+@bot.event
+async def on_message_edit(before, after):
+    if before.author.bot or not before.guild: return
+    if before.content == after.content: return
+    emb = discord.Embed(title="✏️ Nachricht bearbeitet", color=0xf39c12, timestamp=datetime.datetime.utcnow())
+    emb.add_field(name="Vorher", value=(before.content[:1000] or "…"), inline=False)
+    emb.add_field(name="Nachher", value=(after.content[:1000] or "…"), inline=False)
+    emb.add_field(name="User / Channel", value=f"{after.author.mention} • {after.channel.mention} • [Jump]({after.jump_url})", inline=False)
+    await send_log(bot,"message",emb,discord_id=after.author.id,channel_id=after.channel.id)
+
+@bot.event
+async def on_member_ban(guild, user):
+    emb = make_embed("🔨 Ban", f"{user.mention} **{user}**\n`{user.id}`",0xe74c3c)
+    await send_log(bot,"mod",emb,discord_id=user.id)
+
+@bot.event
+async def on_member_unban(guild, user):
+    emb = make_embed("🔓 Unban", f"{user} `{user.id}`",0x2ecc71)
+    await send_log(bot,"mod",emb,discord_id=user.id)
+
+@bot.event
+async def on_guild_channel_create(channel):
+    if "ticket" in channel.name.lower():
+        emb = make_embed("🎫 Ticket geöffnet", f"{channel.mention} erstellt",0x1abc9c)
+        await send_log(bot,"ticket",emb,channel_id=channel.id)
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    if "ticket" in channel.name.lower():
+        emb = make_embed("🎫 Ticket geschlossen", f"#{channel.name} gelöscht",0x95a5a6)
+        await send_log(bot,"ticket",emb,channel_id=channel.id)
+
+# ---------- COMMANDS ----------
+@bot.command(name="help")
+async def help_cmd(ctx):
+    e = discord.Embed(title="🛍️ Void_Shop – Befehle", color=0xFF2020)
+    e.add_field(name="🔐 Verify", value="`!verify Name` – Bio-Code Auth", inline=False)
+    e.add_field(name="🛍️ Shop", value="`!checkbuy` – Auto-Delivery\n`!products`", inline=False)
+    e.add_field(name="🪙 Coins", value="`!coins` `!shop` `!redeem <Coins>` `!daily` `!coinlb`", inline=False)
+    e.add_field(name="📈", value="Käufe → automatisch #live-käufe", inline=False)
+    e.add_field(name="👑 Owner", value="`!revenue` `!stafflb`", inline=False)
+    e.set_footer(text="Void_Shop v1.0 ALL-IN-ONE • Web: http://localhost:5000")
+    await ctx.send(embed=e)
+
+#  🔐 VERIFY
+@bot.command(name="verify")
+async def verify_cmd(ctx, *, roblox_name: str = None):
+    """!verify [RobloxName] – Bulletproof Bio-Code-Auth"""
+    if not roblox_name:
+        return await ctx.send("Usage: `!verify DeinRobloxName`")
+    try: await ctx.message.delete()
+    except: pass
+    res = await roblox_username_to_id(roblox_name)
+    if not res:
+        return await ctx.send(f"❌ Roblox-User **{roblox_name}** nicht gefunden.", delete_after=15)
+    roblox_id, display = res
+    code = generate_bio_code()
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO verify_codes(discord_id,roblox_id,roblox_name,code,created_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",
+            (ctx.author.id, roblox_id, roblox_name, code))
+        await db.commit()
+    emb = discord.Embed(
+        title="🔐 Roblox Verifizierung – Bio-Code-Auth",
+        description=f"**Gefunden:** {display} (@{roblox_name})\nRoblox ID: `{roblox_id}`\n\n**Dein Sicherheitscode:**\n```\n{code}\n```\n\n**So geht's:**\n1️⃣ Kopiere den Code\n2️⃣ Profil: https://www.roblox.com/users/{roblox_id}/profile\n3️⃣ Bearbeiten → **Beschreibung** → Code einfügen → Speichern\n4️⃣ Unten **Bestätigen** klicken\n\n⏱️ 5 Minuten gültig.",
+        color=0x9b59b6)
+    emb.set_footer(text="Void_Shop • Bulletproof Verify")
+    view = VerifyView(ctx.author.id, roblox_id, roblox_name, code)
+    try:
+        await ctx.author.send(embed=emb, view=view)
+        await ctx.send(f"{ctx.author.mention} 📩 Check deine DMs!", delete_after=20)
+    except discord.Forbidden:
+        await ctx.send(embed=emb, view=view, delete_after=300)
+    log_emb = make_embed("🔐 Verify gestartet",
+        f"{ctx.author.mention} → **{roblox_name}** (`{roblox_id}`)\nCode: `{code}`",0x9b59b6,ctx.author)
+    await send_log(bot,"verify",log_emb,discord_id=ctx.author.id)
+
+#  🛍️ CHECKBUY – AUTO-DELIVERY
+@bot.command(name="checkbuy")
+async def checkbuy_cmd(ctx):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute("SELECT roblox_id, roblox_name FROM users WHERE discord_id=? AND verified=1",
+            (ctx.author.id,))
+        row = await cur.fetchone()
+    if not row:
+        return await ctx.send(f"{ctx.author.mention} ❌ Nicht verifiziert! `!verify DeinName`", delete_after=20)
+    roblox_id, roblox_name = row
+    msg = await ctx.send(f"🔍 Prüfe Käufe für **{roblox_name}** (`{roblox_id}`) …")
+    product_key, product = await find_owned_product(roblox_id)
+    if not product:
+        await msg.edit(content=f"❌ Kein neuer Gamepass-Kauf gefunden für **{roblox_name}**.\nKaufe zuerst im Roblox-Shop → dann `!checkbuy` erneut.")
+        log_emb = make_embed("🛍️ checkbuy – nichts gefunden",
+            f"{ctx.author.mention} • {roblox_name} (`{roblox_id}`)",0xe67e22,ctx.author)
+        await send_log(bot,"shop",log_emb,discord_id=ctx.author.id)
+        return
+    purchase_id = await record_purchase(ctx.author.id, roblox_id, product_key, product)
+    await msg.edit(content=f"✅ Kauf erkannt: **{product['name']}** – bereite Auto-Delivery vor …")
+    # DM
+    deliver = product.get("deliver",{})
+    embed = discord.Embed(
+        title=deliver.get("title", f"Danke – {product['name']}"),
+        description=deliver.get("message","Hier ist dein Produkt!"),
+        color=0x00ff88)
+    embed.add_field(name="Produkt", value=product["name"], inline=True)
+    embed.add_field(name="Preis", value=f"{product.get('robux_price','?')} Robux", inline=True)
+    embed.add_field(name="Lieferung", value="< 5 Sekunden • Auto-Delivery", inline=False)
+    files = deliver.get("files",[])
+    if files:
+        embed.add_field(name="Download Links", value="\n".join(f"• <{u}>" for u in files), inline=False)
+    embed.set_footer(text="Void_Shop • Auto-Delivery • danke ❤️")
+    dm_ok=True; dm_msg_id=""
+    try:
+        dm = await ctx.author.create_dm()
+        dm_msg = await dm.send(embed=embed)
+        dm_msg_id=str(dm_msg.id)
+    except Exception:
+        dm_ok=False
+        await ctx.send(f"⚠️ Konnte keine DM senden! Öffne deine DMs.\n\n**Manuell:**\n"+"\n".join(files), delete_after=60)
+    # role
+    try:
+        role_key = product.get("role_give","CUSTOMER")
+        role_id = ROLE_VIP if role_key=="VIP" else ROLE_CUSTOMER
+        if role_id:
+            r = ctx.guild.get_role(role_id)
+            if r: await ctx.author.add_roles(r, reason="Void_Shop Auto-Delivery")
+    except: pass
+    # coins
+    coins_reward = product.get("coins_reward", COIN_REWARDS["purchase"])
+    await add_coins(ctx.author.id, coins_reward, "purchase", product_key)
+    await msg.edit(content=f"🎉 **{product['name']}** erfolgreich geliefert! Check deine DMs {ctx.author.mention}\n+{coins_reward} Void-Coins!")
+    # ticker
+    if TICKER_CHANNEL_ID:
+        await send_purchase_ticker(bot, TICKER_CHANNEL_ID, ctx.author, product["name"], product.get("robux_price",0))
+    # shop log
+    log_emb = make_embed("✅ Auto-Delivery Erfolg",
+        f"{ctx.author.mention} → **{product['name']}**\n{product.get('robux_price')} Robux • DM {'OK' if dm_ok else 'FAIL'}\nRoblox: {roblox_name} (`{roblox_id}`)",
+        0x2ecc71, ctx.author)
+    await send_log(bot,"shop",log_emb,discord_id=ctx.author.id)
+
+@bot.command(name="products")
+async def products_cmd(ctx):
+    emb = discord.Embed(title="🛍️ Void_Shop Produkte", color=0xFFD700)
+    for k,p in PRODUCTS.items():
+        emb.add_field(name=f"{p['name']} – {p['robux_price']} R$",
+                      value=f"Gamepass: `{p['gamepass_id']}`\n`!checkbuy` nach Kauf", inline=False)
+    await ctx.send(embed=emb)
+
+#  🪙 COINS
+@bot.command(name="coins")
+async def coins_cmd(ctx, member: discord.Member=None):
+    target = member or ctx.author
+    bal = await get_coins(target.id)
+    emb = discord.Embed(title="🪙 Void-Coins", description=f"{target.mention} hat **{bal} Coins**", color=0xFFD700)
+    await ctx.send(embed=emb)
+
+@bot.command(name="shop")
+async def coinshop_cmd(ctx):
+    bal = await get_coins(ctx.author.id)
+    emb = discord.Embed(title="🛍️ Coin-Shop", description=f"Dein Guthaben: **{bal} Coins**", color=0xFFD700)
+    for price, reward in sorted(SHOP_REWARDS.items()):
+        emb.add_field(name=f"{price} Coins → {reward['name']}", value=f"`!redeem {price}`", inline=False)
+    emb.set_footer(text="Verdiene: verify +10, invite +25, kauf +50, vouch +30, daily +5")
+    await ctx.send(embed=emb)
+
+@bot.command(name="redeem")
+async def redeem_cmd(ctx, amount:int=None):
+    if not amount or amount not in SHOP_REWARDS:
+        return await ctx.send("Verfügbar: "+", ".join(f"`!redeem {k}`" for k in SHOP_REWARDS))
+    reward = SHOP_REWARDS[amount]
+    ok = await spend_coins(ctx.author.id, amount, f"redeem_{reward['type']}")
+    if not ok:
+        bal = await get_coins(ctx.author.id)
+        return await ctx.send(f"❌ Nicht genug Coins! Du hast {bal}, brauchst {amount}.")
+    emb = discord.Embed(title="✅ Eingelöst!",
+        description=f"**{reward['name']}**\n\nEin Staff meldet sich, oder du erhältst es per DM.",
+        color=0x2ecc71)
+    await ctx.send(embed=emb)
+    log_emb = make_embed("🪙 Coin Redeem",
+        f"{ctx.author.mention} hat **{reward['name']}** für {amount} Coins eingelöst.",0xFFD700,ctx.author)
+    await send_log(bot,"coins",log_emb,discord_id=ctx.author.id)
+
+@bot.command(name="coinlb", aliases=["coinslb"])
+async def coinlb_cmd(ctx):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute("SELECT discord_id, coins, purchases FROM users ORDER BY coins DESC LIMIT 10")
+        rows = await cur.fetchall()
+    desc = ""
+    for i,(did,coins,pur) in enumerate(rows,1):
+        desc += f"**#{i}** <@{did}> — **{coins}** 🪙 · {pur} Käufe\n"
+    emb = discord.Embed(title="🏆 Void-Coin Leaderboard", description=desc or "Noch niemand.", color=0xFFD700)
+    await ctx.send(embed=emb)
+
+@bot.command(name="daily")
+@commands.cooldown(1,86400,commands.BucketType.user)
+async def daily_cmd(ctx):
+    await add_coins(ctx.author.id, COIN_REWARDS["daily"], "daily")
+    await ctx.send(f"✅ Daily abgeholt! +{COIN_REWARDS['daily']} Coins")
+
+@daily_cmd.error
+async def daily_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        h = int(error.retry_after//3600); m = int((error.retry_after%3600)//60)
+        await ctx.send(f"⏳ Schon abgeholt! Nächster Daily in {h}h {m}m")
+
+#  👑 OWNER
+def is_owner():
+    async def predicate(ctx): return ctx.author.id == OWNER_ID or OWNER_ID==0
+    return commands.check(predicate)
+
+@bot.command(name="revenue")
+@is_owner()
+async def revenue_cmd(ctx):
+    data = await get_revenue_summary()
+    emb = discord.Embed(title="👑 Revenue Dashboard – Owner Only", color=0x2c3e50)
+    emb.add_field(name="Heute", value=f"{data['today_robux']} R$\n{data['today_purchases']} Käufe", inline=True)
+    emb.add_field(name="Monat", value=f"{data['month_robux']} R$\n{data['month_purchases']} Käufe", inline=True)
+    emb.add_field(name="Gesamt", value=f"{data['total_robux']} R$\n{data['total_purchases']} Käufe", inline=True)
+    top_text = "\n".join([f"• {p} – {c}x – {r} R$" for p,c,r in data["top_products"]]) or "–"
+    emb.add_field(name="Top Produkte", value=top_text, inline=False)
+    await ctx.send(embed=emb, delete_after=120)
+    try: await ctx.message.delete()
+    except: pass
+
+@bot.command(name="stafflb")
+@is_owner()
+async def stafflb_cmd(ctx):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute("SELECT staff_id,tickets_claimed,tickets_closed,rating_count, CASE WHEN rating_count>0 THEN rating_sum*1.0/rating_count ELSE 0 END as avg FROM staff_stats ORDER BY tickets_closed DESC LIMIT 10")
+        rows = await cur.fetchall()
+    desc=""
+    for i,(sid,claimed,closed,rc,avg) in enumerate(rows,1):
+        desc+=f"**#{i}** <@{sid}> – {closed} closed / {claimed} claimed · ⭐ {avg:.1f} ({rc})\n"
+    emb = discord.Embed(title="👑 Staff Leaderboard", description=desc or "Keine Daten", color=0x2c3e50)
+    await ctx.send(embed=emb, delete_after=120)
+
+@bot.command(name="ticker")
+@commands.has_permissions(manage_guild=True)
+async def ticker_test(ctx):
+    if TICKER_CHANNEL_ID:
+        await send_purchase_ticker(bot, TICKER_CHANNEL_ID, ctx.author, "Premium FastFlags Paket", 250)
+        await ctx.send("✅ Test-Ticker gesendet", delete_after=5)
+
+# =====================================================================
+#  👑  WEB DASHBOARD – FLASK (eingebaut)
+# =====================================================================
+def run_dashboard():
+    if not DASHBOARD_ENABLED: return
+    try:
+        from flask import Flask, render_template_string, request, redirect, session, jsonify
+    except ImportError:
+        print("[Dashboard] Flask nicht installiert – pip install Flask")
+        return
+
+    app = Flask(__name__)
+    app.secret_key = DASHBOARD_SECRET
+
+    # --- Templates inline (keine externen Dateien nötig) ---
+    BASE_HTML = """
+<!doctype html><html lang=de><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Void_Shop Dashboard</title>
+<style>
+:root{--bg:#0b0b0f;--card:#141421;--red:#FF2020;--gold:#FFD700;--muted:#889}
+*{box-sizing:border-box;font-family:Inter,Segoe UI,Arial,sans-serif}
+body{margin:0;background:var(--bg);color:#eee}
+a{color:var(--gold);text-decoration:none}
+.nav{display:flex;gap:18px;padding:14px 24px;background:#11111a;border-bottom:2px solid #1f1f2e;position:sticky;top:0}
+.nav b{color:var(--red)}
+.wrap{max-width:1300px;margin:24px auto;padding:0 20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
+.card{background:var(--card);border:1px solid #222235;border-radius:16px;padding:18px}
+.big{font-size:30px;font-weight:800}
+.gold{color:var(--gold)}.red{color:var(--red)}.green{color:#2ecc71}.blue{color:#3498db}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:8px 10px;border-bottom:1px solid #252538;text-align:left}
+th{color:var(--muted)}
+.badge{background:#222;padding:2px 8px;border-radius:999px;font-size:12px}
+.footer{opacity:.5;text-align:center;padding:30px;font-size:12px}
+input,textarea{width:100%;padding:10px;background:#0f0f18;border:1px solid #2a2a40;color:#eee;border-radius:10px}
+textarea{min-height:340px;font-family:monospace}
+.btn{background:var(--red);color:#fff;border:none;padding:10px 16px;border-radius:10px;font-weight:700;cursor:pointer}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){.two{grid-template-columns:1fr}}
+</style></head><body>
+<div class=nav><b>🛍️ VOID_SHOP</b>
+<a href="/">Dashboard</a><a href="/products">Produkte</a><a href="/coins">Coins</a><a href="/logs">Logs</a>
+<span style="flex:1"></span><a href="/logout">Logout</a></div>
+<div class=wrap>
+{{ content|safe }}
+<div class=footer>Void_Shop v1.0 ALL-IN-ONE • RealVexo696 • Companion to VOID-TOOLS v2.6</div>
+</div></body></html>
+"""
+    def page(content): return render_template_string(BASE_HTML, content=content)
+    def q(sql, args=(), one=False):
+        con = sqlite3.connect(DATABASE_PATH); con.row_factory=sqlite3.Row
+        cur = con.execute(sql, args); rv = cur.fetchall(); con.close()
+        return (rv[0] if rv else None) if one else rv
+
+    @app.route("/login", methods=["GET","POST"])
+    def login():
+        if request.method=="POST":
+            if request.form.get("code") in (DASHBOARD_LOGIN_CODE, str(OWNER_ID), "voidshop"):
+                session["owner"]=True
+                return redirect("/")
+            err="<p style=color:#ff6b6b>Falscher Code</p>"
+        else: err=""
+        return f"""<!doctype html><meta charset=utf-8><title>Login</title>
+<style>body{{margin:0;background:#0b0b0f;color:#eee;font-family:Segoe UI,Arial;display:grid;place-items:center;height:100vh}}
+.box{{background:#141421;padding:36px;border-radius:20px;max-width:380px;width:90%}}
+input{{width:100%;padding:13px;background:#0f0f18;border:1px solid #2a2a40;color:#eee;border-radius:12px;margin:10px 0;font-size:16px}}
+button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border-radius:12px;font-weight:700;font-size:16px;cursor:pointer}}
+</style>
+<div class=box><h1 style="margin:0;color:#FF2020">👑 Void_Shop</h1><p style="color:#889">Owner Dashboard Login</p>
+{err}
+<form method=post><input type=password name=code placeholder="Owner Code" autofocus>
+<button>Einloggen</button></form>
+<small style="color:#666">Standard: <b>voidshop</b></small></div>"""
+
+    @app.route("/logout")
+    def logout(): session.clear(); return redirect("/login")
+
+    def owner_required(f):
+        from functools import wraps
+        @wraps(f)
+        def w(*a, **kw):
+            if not session.get("owner"): return redirect("/login")
+            return f(*a, **kw)
+        return w
+
+    @app.route("/")
+    @owner_required
+    def index():
+        # revenue sync
+        import asyncio
+        data = asyncio.run(get_revenue_summary())
+        users = q("SELECT COUNT(*) c FROM users", one=True); users = users["c"] if users else 0
+        verified = q("SELECT COUNT(*) c FROM users WHERE verified=1", one=True); verified = verified["c"] if verified else 0
+        coins_total = q("SELECT COALESCE(SUM(coins),0) s FROM users", one=True)["s"]
+        recent = q("SELECT p.*, u.roblox_name FROM purchases p LEFT JOIN users u ON u.discord_id=p.discord_id ORDER BY p.created_at DESC LIMIT 12")
+        coin_lb = q("SELECT discord_id, coins, purchases FROM users ORDER BY coins DESC LIMIT 10")
+        scams = q("SELECT * FROM antiscam_hits ORDER BY created_at DESC LIMIT 8")
+        conv = round((data["total_purchases"]/verified*100) if verified else 0,1)
+        # render
+        html = f"""
+<h2>👑 Management Dashboard <span class=badge>LIVE</span></h2>
+<div class=grid>
+ <div class=card><div style="color:#889;font-size:12px;text-transform:uppercase">Heute Umsatz</div><div class="big gold">{data['today_robux']} <span style="font-size:16px">R$</span></div>{data['today_purchases']} Käufe</div>
+ <div class=card><div style="color:#889;font-size:12px;text-transform:uppercase">Monat Umsatz</div><div class="big red">{data['month_robux']} R$</div>{data['month_purchases']} Käufe</div>
+ <div class=card><div style="color:#889;font-size:12px;text-transform:uppercase">Gesamt</div><div class=big>{data['total_robux']} R$</div>{data['total_purchases']} Käufe gesamt</div>
+ <div class=card><div style="color:#889;font-size:12px;text-transform:uppercase">User</div><div class="big blue">{users}</div>{verified} verifiziert</div>
+ <div class=card><div style="color:#889;font-size:12px;text-transform:uppercase">Coins im Umlauf</div><div class="big gold">🪙 {coins_total}</div>Economy aktiv</div>
+ <div class=card><div style="color:#889;font-size:12px;text-transform:uppercase">Conversion</div><div class="big green">{conv}%</div>verified → kauf</div>
+</div>
+<div class=two style="margin-top:16px">
+ <div class=card><h3>📈 Top Produkte</h3><table><tr><th>Produkt</th><th>Verkäufe</th><th>Umsatz</th></tr>"""
+        for p,c,r in data["top_products"]:
+            html += f"<tr><td>{p}</td><td>{c}</td><td class=gold>{r} R$</td></tr>"
+        html += "</table></div><div class=card><h3>🪙 Coin Leaderboard</h3><table><tr><th>#</th><th>User</th><th>Coins</th></tr>"
+        for i,row in enumerate(coin_lb,1):
+            html += f"<tr><td>{i}</td><td>&lt;@{row['discord_id']}&gt;</td><td class=gold>{row['coins']}</td></tr>"
+        html += "</table></div></div>"
+        html += "<div class=card style='margin-top:16px'><h3>🛍️ Letzte Käufe – Live Ticker</h3><table><tr><th>Zeit</th><th>Käufer</th><th>Produkt</th><th>R$</th></tr>"
+        for r in recent:
+            rn = f" <small>({r['roblox_name']})</small>" if r["roblox_name"] else ""
+            html += f"<tr><td>{r['created_at']}</td><td>&lt;@{r['discord_id']}&gt;{rn}</td><td>{r['product_key']}</td><td class=gold>{r['robux_price']}</td></tr>"
+        html += "</table></div>"
+        html += "<div class=card style='margin-top:16px'><h3>🚨 Letzte AntiScam Hits</h3><table><tr><th>Zeit</th><th>User</th><th>URL</th><th>Grund</th></tr>"
+        for s in scams:
+            html += f"<tr><td>{s['created_at']}</td><td>&lt;@{s['discord_id']}&gt;</td><td style='max-width:300px;overflow:hidden;text-overflow:ellipsis'>{s['url']}</td><td>{s['reason']}</td></tr>"
+        if not scams: html += "<tr><td colspan=4 style=color:#666>Keine Scam-Versuche – Schild hält! 🛡️</td></tr>"
+        html += "</table></div>"
+        html += "<div class=card style='margin-top:16px'><h3>🛒 Produkte – Auto-Delivery aktiv</h3><table><tr><th>Key</th><th>Name</th><th>Gamepass</th><th>Preis</th></tr>"
+        import json as _json
+        for k,p in PRODUCTS.items():
+            html += f"<tr><td><code>{k}</code></td><td>{p['name']}</td><td>{p['gamepass_id']}</td><td class=gold>{p['robux_price']} R$</td></tr>"
+        html += "</table><p><a href='/products' class=btn>Produkte bearbeiten →</a></p></div>"
+        return page(html)
+
+    @app.route("/products", methods=["GET","POST"])
+    @owner_required
+    def products_page():
+        import json
+        if request.method=="POST":
+            return "<p style=color:#ff6b6b>Read-only in All-In-One – editiere PRODUCTS dict oben in der .py Datei Zeile ~90</p><p><a href=/products>Zurück</a></p>", 400
+        pretty = json.dumps(PRODUCTS, indent=2, ensure_ascii=False)
+        html = f"""<h2>🛍️ Produkt-Manager – Auto-Delivery</h2>
+<div class=card><p>Produkte sind in dieser ALL-IN-ONE Version direkt im Code (Zeile ~90 <code>PRODUCTS = {{...}}</code>).<br>
+Dashboard-Editor ist read-only – editiere die .py Datei direkt.</p>
+<textarea readonly>{pretty}</textarea>
+<br><br><a href="/" class=btn>← Dashboard</a></div>"""
+        return page(html)
+
+    @app.route("/coins")
+    @owner_required
+    def coins_page():
+        rows = q("SELECT discord_id, coins, purchases, total_spent_robux, roblox_name FROM users ORDER BY coins DESC LIMIT 100")
+        ledger = q("SELECT * FROM coins_ledger ORDER BY created_at DESC LIMIT 150")
+        html = "<h2>🪙 Void-Coins Economy</h2><div class=two>"
+        html += "<div class=card><h3>Leaderboard</h3><table><tr><th>User</th><th>Coins</th><th>Käufe</th><th>R$</th></tr>"
+        for r in rows:
+            html += f"<tr><td>&lt;@{r['discord_id']}&gt; {r['roblox_name'] or ''}</td><td class=gold>{r['coins']}</td><td>{r['purchases']}</td><td>{r['total_spent_robux']}</td></tr>"
+        html += "</table></div><div class=card><h3>Ledger</h3><table><tr><th>Zeit</th><th>User</th><th>±</th><th>Grund</th></tr>"
+        for l in ledger:
+            col = "green" if l["amount"]>0 else "red"
+            html += f"<tr><td>{l['created_at']}</td><td>&lt;@{l['discord_id']}&gt;</td><td class={col}>{l['amount']:+d}</td><td>{l['reason']}</td></tr>"
+        html += "</table></div></div>"
+        return page(html)
+
+    @app.route("/logs")
+    @owner_required
+    def logs_page():
+        t = request.args.get("type","")
+        if t:
+            rows = q("SELECT * FROM logs WHERE log_type=? ORDER BY created_at DESC LIMIT 300", (t,))
+        else:
+            rows = q("SELECT * FROM logs ORDER BY created_at DESC LIMIT 300")
+        types = [r["log_type"] for r in q("SELECT DISTINCT log_type FROM logs")]
+        filt = " ".join([f"<a class=badge href=/logs?type={x}>{x}</a>" for x in types]) + " <a class=badge href=/logs>alle</a>"
+        html = f"<h2>📜 LogSystem 2.0 – 12 Kanäle</h2><div class=card style='margin-bottom:12px'>{filt}</div>"
+        html += "<div class=card><table><tr><th>Zeit</th><th>Typ</th><th>User</th><th>Channel</th><th>Content</th></tr>"
+        for r in rows:
+            uid = f"&lt;@{r['discord_id']}&gt;" if r["discord_id"] else ""
+            ch = f"#{r['channel_id']}" if r["channel_id"] else ""
+            cont = (r["content"] or "")[:150]
+            html += f"<tr><td>{r['created_at']}</td><td><span class=badge>{r['log_type']}</span></td><td>{uid}</td><td>{ch}</td><td>{cont}</td></tr>"
+        html += "</table></div>"
+        return page(html)
+
+    @app.route("/api/revenue")
+    @owner_required
+    def api_revenue():
+        import asyncio
+        return jsonify(asyncio.run(get_revenue_summary()))
+
+    print(f"[*] Void_Shop Dashboard → http://{DASHBOARD_HOST}:{DASHBOARD_PORT}  – Login: {DASHBOARD_LOGIN_CODE}")
+    app.run(host=DASHBOARD_HOST, port=DASHBOARD_PORT, debug=False, use_reloader=False)
+
+# =====================================================================
+#  🚀  START
+# =====================================================================
+async def main():
+    await init_db()
+    if TOKEN == "PUT_YOUR_BOT_TOKEN_HERE" or not TOKEN:
+        print("\n[!] DISCORD_TOKEN fehlt!\n  → Öffne void_shop_all_in_one.py\n  → Bearbeite CONFIG ganz oben: TOKEN, GUILD_ID, OWNER_ID\n  → Trage deine 12 LOG_CHANNEL IDs ein\n")
+        return
+    async with bot:
+        await bot.start(TOKEN)
 
 if __name__ == "__main__":
-    if not TOKEN or TOKEN == "DEIN_BOT_TOKEN_HIER":
-        logger.error("FEHLER: Kein gültiger Discord Bot-Token gefunden!\n"
-                     "-> Bitte hinterlege deinen Token in Railway unter 'Variables' (Secrets) als 'DISCORD_TOKEN' (oder 'TOKEN').\n"
-                     "-> Alternativ kannst du ihn in der 'bot.py' (Zeile 37) eintragen.")
-    else:
-        # Flask Webserver für 24/7 online halten auf Railway starten
-        keep_alive()
-        
+    # Dashboard in Thread
+    if DASHBOARD_ENABLED:
+        t = threading.Thread(target=run_dashboard, daemon=True)
+        t.start()
+        time.sleep(0.8)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n[+] Shutdown.")
+    finally:
         try:
-            bot.run(TOKEN)
-        except discord.errors.LoginFailure:
-            logger.error("FEHLER: Der angegebene Bot-Token ist ungültig! Bitte überprüfe dein 'DISCORD_TOKEN' Secret in Railway.")
-        except Exception as e:
-            logger.error(f"Fehler beim Starten des Bots: {e}")
+            # close aiohttp
+            if _session and not _session.closed:
+                asyncio.run(_session.close())
+        except: pass
