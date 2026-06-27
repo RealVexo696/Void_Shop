@@ -34,7 +34,7 @@ logger = logging.getLogger('void_shop_bot')
 #                                KONFIGURATION
 # ==============================================================================
 # Trage hier direkt deinen Discord Bot-Token ein!
-TOKEN = "MTUyMDE3MDg0MTQ2NjQ3MDUyMQ.GbIcAF.OBOLoyO8IKC3sbfr1oVuWEMwAw4PphQXy4RCWQ" 
+TOKEN = "MTUyMDE3MDg0MTQ2NjQ3MDUyMQ.GbIcAF.OBOLoyO8IKC3sbfr1oVuWEMwAw4PphQXy4RCWQ"  
 
 # Der Prefix für deine Befehle (Standard ist !)
 PREFIX = "!"
