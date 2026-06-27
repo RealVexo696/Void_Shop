@@ -154,10 +154,14 @@ class RobloxVerifyView(discord.ui.View):
         member = interaction.user
 
         verified_role = discord.utils.get(guild.roles, name="👤│ 𝗩𝗢𝗜𝗗 • 𝗩𝗲𝗿𝗶𝗳𝗶𝗲𝗱")
+        member_role = discord.utils.get(guild.roles, name="👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿")
         
         try:
-            if verified_role:
-                await member.add_roles(verified_role)
+            roles_to_add = []
+            if verified_role: roles_to_add.append(verified_role)
+            if member_role: roles_to_add.append(member_role)
+            if roles_to_add:
+                await member.add_roles(*roles_to_add)
             await member.edit(nick=self.roblox_name)
 
             success_embed = create_prestige_embed(
@@ -308,6 +312,186 @@ class RemoveUserModal(discord.ui.Modal, title="User aus Ticket entfernen"):
             await interaction.response.send_message(f"❌ Fehler beim Entfernen: {e}", ephemeral=True)
 
 
+# --- TICKET TRANSCRIPT & CLOSE HELPER ---
+
+async def execute_ticket_close_process(channel, closed_by_user, bot_user):
+    embed_closing = create_prestige_embed(
+        title="🔒 Ticket-Schließung",
+        description="> ⚠️ Dieses Ticket wird transkribiert und in **4 Sekunden** endgültig gelöscht...",
+        color=0xff003c,
+        author_user=closed_by_user,
+        bot_user=bot_user
+    )
+    try:
+        await channel.send(embed=embed_closing)
+    except Exception:
+        pass
+    await asyncio.sleep(4)
+
+    try:
+        messages = []
+        async for msg in channel.history(limit=1000, oldest_first=True):
+            timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            author = f"{msg.author.name}#{msg.author.discriminator}" if msg.author.discriminator != "0" else msg.author.name
+            if msg.author.bot:
+                author += " [BOT]"
+            content_str = msg.content if msg.content else "[Kein Textinhalt]"
+            if msg.attachments:
+                att_urls = ", ".join([att.url for att in msg.attachments])
+                content_str += f" (Anhänge: {att_urls})"
+            if msg.embeds:
+                content_str += f" [Embed: {msg.embeds[0].title or 'Ohne Titel'}]"
+            messages.append(f"[{timestamp}] {author}: {content_str}")
+
+        transcript_content = (
+            f"==================================================\n"
+            f"         𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 - TICKET TRANSKRIPT             \n"
+            f"==================================================\n"
+            f"Kanalname:     {channel.name}\n"
+            f"Geschlossen:   {closed_by_user.name} ({closed_by_user.id})\n"
+            f"Nachrichten:   {len(messages)}\n"
+            f"==================================================\n\n"
+            + "\n".join(messages)
+        )
+
+        ticket_logs_channel = discord.utils.get(channel.guild.text_channels, name="💾│ticket-logs")
+        if ticket_logs_channel:
+            file_data = io.BytesIO(transcript_content.encode("utf-8"))
+            discord_file = discord.File(file_data, filename=f"transcript-{channel.name}.txt")
+            embed_log = create_prestige_embed(
+                title="💾 Ticket-Transkript archiviert",
+                description=f"> **Ticket:** {channel.name}\n"
+                            f"> **Geschlossen von:** {closed_by_user.mention}\n"
+                            f"> Das vollständige Gesprächsprotokoll wurde erfolgreich gesichert.",
+                color=0xff003c,
+                author_user=closed_by_user,
+                bot_user=bot_user
+            )
+            await ticket_logs_channel.send(embed=embed_log, file=discord_file)
+    except Exception as e:
+        logger.error(f"Fehler beim Erstellen des Ticket-Transkripts: {e}")
+
+    try:
+        await channel.delete()
+    except Exception as e:
+        logger.error(f"Fehler beim Löschen des Ticket-Kanals: {e}")
+
+
+# --- KAUF-TICKET SCHLIESSUNGS-QUESTIONNAIRE ---
+
+class PurchaseReviewModal(discord.ui.Modal):
+    def __init__(self, product_name: str):
+        super().__init__(title="⭐ Deine Bewertung (3/3)")
+        self.product_name = product_name
+
+    stars_input = discord.ui.TextInput(
+        label="Sterne-Bewertung (1 bis 5)",
+        placeholder="z.B. ⭐⭐⭐⭐⭐ oder 5/5",
+        required=True,
+        max_length=25
+    )
+
+    feedback_input = discord.ui.TextInput(
+        label="Wie fandest du Support & Produkt?",
+        style=discord.TextStyle.paragraph,
+        placeholder="Beschreibe kurz deine Erfahrung... (Sehr schneller Support, FastFlags funktionieren perfekt etc.)",
+        required=True,
+        max_length=1000
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        member = interaction.user
+
+        stars = self.stars_input.value
+        feedback = self.feedback_input.value
+
+        vouch_channel = discord.utils.get(guild.text_channels, name="🤝│vouches") or discord.utils.get(guild.text_channels, name="vouches")
+
+        if vouch_channel:
+            vouch_embed = create_prestige_embed(
+                title="⭐ NEUE KUNDENBEWERTUNG ⭐",
+                description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                            f"> **Kunde:** {member.mention} ({member.name})\n"
+                            f"> **Produkt:** `{self.product_name}`\n"
+                            f"> **Bewertung:** {stars}\n\n"
+                            f"**Rezension:**\n"
+                            f"> *\"{feedback}\"*",
+                color=0xffd700,
+                author_user=member,
+                bot_user=interaction.client.user
+            )
+            vouch_embed.set_thumbnail(url=member.display_avatar.url)
+            try:
+                await vouch_channel.send(embed=vouch_embed)
+            except Exception:
+                pass
+
+        thank_embed = create_prestige_embed(
+            title="🎉 Herzlichen Dank für deine wunderbare Bewertung!",
+            description=f"> Dein Feedback wurde direkt im Kanal {vouch_channel.mention if vouch_channel else '#vouches'} veröffentlicht!\n\n"
+                        f"Das Ticket wird nun abgeschlossen...",
+            color=0x39ff14,
+            author_user=member,
+            bot_user=interaction.client.user
+        )
+        await interaction.response.send_message(embed=thank_embed)
+
+        await execute_ticket_close_process(interaction.channel, member, interaction.client.user)
+
+
+class PurchaseQuestion2View(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🚀 FastFlags", style=discord.ButtonStyle.primary, custom_id="pq2_fastflags")
+    async def prod_fastflags(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(PurchaseReviewModal("FastFlags 🚀"))
+
+    @discord.ui.button(label="👕 T-Shirt / Kleidung", style=discord.ButtonStyle.primary, custom_id="pq2_tshirt")
+    async def prod_tshirt(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(PurchaseReviewModal("T-Shirt / Kleidung 👕"))
+
+    @discord.ui.button(label="🖥️ Discord Template", style=discord.ButtonStyle.primary, custom_id="pq2_template")
+    async def prod_template(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(PurchaseReviewModal("Discord Template 🖥️"))
+
+    @discord.ui.button(label="✨ Sonstiges Produkt", style=discord.ButtonStyle.secondary, custom_id="pq2_other")
+    async def prod_other(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(PurchaseReviewModal("Sonstiges Produkt ✨"))
+
+    @discord.ui.button(label="Überspringen ⏩", style=discord.ButtonStyle.danger, custom_id="pq2_skip")
+    async def skip_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children: child.disabled = True
+        await interaction.response.edit_message(view=self)
+        await execute_ticket_close_process(interaction.channel, interaction.user, interaction.client.user)
+
+
+class PurchaseQuestion1View(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Ja, habe ich! 🛍️", style=discord.ButtonStyle.success, custom_id="pq1_yes")
+    async def bought_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children: child.disabled = True
+        await interaction.response.edit_message(view=self)
+        
+        embed_q2 = create_prestige_embed(
+            title="🛒 Frage 2/3: Produkt-Auswahl",
+            description="> Klasse! 🎉\n\n**Was genau hast du bei uns gekauft?**\nWähle unten das passende Produkt aus:",
+            color=0x00f0ff,
+            author_user=interaction.user,
+            bot_user=interaction.client.user
+        )
+        await interaction.followup.send(embed=embed_q2, view=PurchaseQuestion2View())
+
+    @discord.ui.button(label="Nein, nichts gekauft ❌", style=discord.ButtonStyle.secondary, custom_id="pq1_no")
+    async def bought_no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children: child.disabled = True
+        await interaction.response.edit_message(view=self)
+        await execute_ticket_close_process(interaction.channel, interaction.user, interaction.client.user)
+
+
 # --- PERSISTENTE TICKET-ANSICHTEN (TICKET SYSTEM) ---
 
 class CloseTicketView(discord.ui.View):
@@ -418,73 +602,22 @@ class CloseTicketView(discord.ui.View):
             child.disabled = True
         await interaction.response.edit_message(view=self)
 
-        guild = interaction.guild
         channel = interaction.channel
 
-        embed_closing = create_prestige_embed(
-            title="🔒 Ticket-Schließung",
-            description="> ⚠️ Dieses Ticket wird geschlossen, transkribiert und in **5 Sekunden** gelöscht...",
-            color=0xff003c,
-            author_user=interaction.user,
-            bot_user=interaction.client.user
-        )
-        await channel.send(embed=embed_closing)
-        await asyncio.sleep(5)
+        # Prüfen ob es sich um ein Kauf-Ticket handelt
+        is_buy_ticket = (channel.topic and "Kauf-Anfrage" in channel.topic) or ("kauf" in channel.name.lower())
 
-        # 📄 AUTOMATISCHER TICKET-TRANSCRIPT-BUILDER
-        try:
-            messages = []
-            async for msg in channel.history(limit=1000, oldest_first=True):
-                timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
-                author = f"{msg.author.name}#{msg.author.discriminator}" if msg.author.discriminator != "0" else msg.author.name
-                if msg.author.bot:
-                    author += " [BOT]"
-                
-                content_str = msg.content if msg.content else "[Kein Textinhalt]"
-                if msg.attachments:
-                    att_urls = ", ".join([att.url for att in msg.attachments])
-                    content_str += f" (Anhänge: {att_urls})"
-                if msg.embeds:
-                    content_str += f" [Embed: {msg.embeds[0].title or 'Ohne Titel'}]"
-                
-                messages.append(f"[{timestamp}] {author}: {content_str}")
-
-            transcript_content = (
-                f"==================================================\n"
-                f"         𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 - TICKET TRANSKRIPT             \n"
-                f"==================================================\n"
-                f"Kanalname:     {channel.name}\n"
-                f"Geschlossen:   {interaction.user.name} ({interaction.user.id})\n"
-                f"Nachrichten:   {len(messages)}\n"
-                f"==================================================\n\n"
-                + "\n".join(messages)
+        if is_buy_ticket:
+            embed_q1 = create_prestige_embed(
+                title="🛒 Frage 1/3: Produktkauf",
+                description="> Bevor wir dein Kauf-Ticket schließen:\n\n**Hast du erfolgreich ein Produkt bei uns gekauft?**",
+                color=0xffd700,
+                author_user=interaction.user,
+                bot_user=interaction.client.user
             )
-
-            ticket_logs_channel = discord.utils.get(guild.text_channels, name="💾│ticket-logs")
-            if ticket_logs_channel:
-                file_data = io.BytesIO(transcript_content.encode("utf-8"))
-                discord_file = discord.File(file_data, filename=f"transcript-{channel.name}.txt")
-                
-                embed_log = create_prestige_embed(
-                    title="💾 Ticket-Transkript archiviert",
-                    description=f"> **Ticket:** {channel.name}\n"
-                                f"> **Mitarbeiter:** {interaction.user.mention}\n"
-                                f"> Das vollständige Protokoll wurde erfolgreich als Textdatei gesichert.",
-                    color=0xff003c,
-                    author_user=interaction.user,
-                    bot_user=interaction.client.user
-                )
-                await ticket_logs_channel.send(embed=embed_log, file=discord_file)
-                
-        except Exception as e:
-            logger.error(f"Fehler beim Erstellen des Ticket-Transkripts: {e}")
-
-        try:
-            await channel.delete()
-        except discord.Forbidden:
-            logger.error(f"Fehler: Keine Berechtigung zum Löschen des Kanals {channel.name}.")
-        except Exception as e:
-            logger.error(f"Fehler beim Löschen des Ticket-Kanals: {e}")
+            await channel.send(embed=embed_q1, view=PurchaseQuestion1View())
+        else:
+            await execute_ticket_close_process(channel, interaction.user, interaction.client.user)
 
 
 class TicketButton(discord.ui.View):
@@ -572,33 +705,39 @@ class TicketButton(discord.ui.View):
 
             if ticket_type == "Kauf-Anfrage":
                 description = (
-                    f"Hallo {member.mention},\n\nvielen Dank, dass du ein Ticket bei **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣** geöffnet hast!\nUnser Support-Team wird sich in Kürze um dich kümmern.\n\n"
-                    f"**Bitte bereite bereits folgende Informationen vor:**\n"
+                    f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                    f"👋 **Herzlich willkommen, {member.mention}!**\n\n"
+                    f"> Vielen Dank für dein Interesse an den Produkten von **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣**.\n"
+                    f"> Unser Team wurde benachrichtigt und ist gleich für dich da!\n\n"
+                    f"📌 **Bitte teile uns direkt folgende Infos mit:**\n"
                     f"> 🤖 │ **Roblox Username:**\n"
-                    f"> 📦 │ **Gewünschte Produkte:** (z.B. T-Shirt Vorlagen, Premium FastFlags)\n"
-                    f"> 💳 │ **Zahlungsmethode:** (PayPal, Robux, Paysafecard, Krypto)\n\n"
-                    f"*Mitarbeiter können das Ticket über den Knopf unten 'claimen'.*"
+                    f"> 🛍️ │ **Gewünschtes Produkt:** *(z.B. FastFlags, T-Shirt, Template)*\n"
+                    f"> 💳 │ **Zahlungsart:** *(PayPal, Robux, Paysafecard, Krypto)*\n\n"
+                    f"⏳ *Ein Teammitglied wird dein Ticket unten über 'Claimen' übernehmen.*"
                 )
                 color = 0x39ff14
             elif ticket_type == "Allgemeiner Support":
                 description = (
-                    f"Hallo {member.mention},\n\nvielen Dank für deine Anfrage!\n"
-                    f"Beschreibe dein Anliegen bitte so detailliert wie möglich.\n\n"
-                    f"**Beispiele für Support-Anfragen:**\n"
-                    f"> ⚙️ │ Fragen zur Aktivierung der FastFlags\n"
-                    f"> 🖥️ │ Technische Probleme mit Discord-Vorlagen\n\n"
-                    f"*Mitarbeiter können das Ticket unten claimen.*"
+                    f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                    f"👋 **Herzlich willkommen, {member.mention}!**\n\n"
+                    f"> Du benötigst technische Hilfe oder hast Fragen zu unserem Shop?\n"
+                    f"> Bitte schildere dein Problem so genau wie möglich!\n\n"
+                    f"📌 **Häufige Themen:**\n"
+                    f"> 🚀 │ Installation & Nutzung der FastFlags\n"
+                    f"> ⚙️ │ Hilfe bei Discord Server-Layouts & Rechten\n\n"
+                    f"⏳ *Ein Supporter widmet sich dir in Kürze.*"
                 )
                 color = 0x00f0ff
             else:
                 description = (
-                    f"Hallo {member.mention},\n\nvielen Dank für deine Partnerschafts-Anfrage!\n"
-                    f"Bitte lade deinen Einladungslink hoch und nenne uns einige Eckdaten.\n\n"
-                    f"**Eckdaten für Partnerschaften:**\n"
-                    f"> 🔗 │ Server-Thema / Nische\n"
-                    f"> 👥 │ Aktuelle Mitgliederanzahl\n"
-                    f"> 📍 │ Unendlicher Einladungslink deines Servers\n\n"
-                    f"*Mitarbeiter können dieses Ticket unten annehmen.*"
+                    f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                    f"🤝 **Partnerschafts-Anfrage von {member.mention}**\n\n"
+                    f"> Schön, dass du mit **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣** kooperieren möchtest!\n\n"
+                    f"📌 **Bitte nenne uns kurz deine Eckdaten:**\n"
+                    f"> 🔗 │ **Thema deines Servers:**\n"
+                    f"> 👥 │ **Mitgliederanzahl:**\n"
+                    f"> 📍 │ **Dauerhafter Einladungslink:**\n\n"
+                    f"⏳ *Die Projektleitung wird sich dein Angebot ansehen.*"
                 )
                 color = 0xffa500
 
@@ -713,6 +852,8 @@ class VoidShopBot(commands.Bot):
         self.add_view(TicketButton())
         self.add_view(CloseTicketView())
         self.add_view(SimpleVerifyButton())
+        self.add_view(PurchaseQuestion1View())
+        self.add_view(PurchaseQuestion2View())
         
         # Starte den Stats-Update-Loop (hier läuft die Event-Loop garantiert!)
         if not update_stats_task.is_running():
@@ -880,6 +1021,9 @@ async def checkbuy_command(ctx, roblox_username: str = None, gamepass_id: int = 
                 await member.add_roles(premium_buyer_role)
                 added_roles.append(premium_buyer_role.name)
 
+            vouch_ch = discord.utils.get(guild.text_channels, name="🤝│vouches") or discord.utils.get(guild.text_channels, name="vouches")
+            vouch_mention = vouch_ch.mention if vouch_ch else "`#vouches`"
+
             success_embed = create_prestige_embed(
                 title="🎉 Kauf verifiziert & Rollen vergeben!",
                 description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
@@ -887,7 +1031,9 @@ async def checkbuy_command(ctx, roblox_username: str = None, gamepass_id: int = 
                             f"Du besitzt den Roblox Gamepass `{gamepass_id}`.\n"
                             f"Folgende Premium-Käuferrollen wurden dir freigeschaltet:\n"
                             f"> 👑 │ " + " & ".join([f"**{r}**" for r in added_roles]) + "\n\n"
-                            f"Vielen Dank für deinen Einkauf bei **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣**! Du hast ab jetzt Zugriff auf die exklusiven Lounges.",
+                            f"Vielen Dank für deinen Einkauf bei **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣**! Du hast ab jetzt Zugriff auf die exklusiven Lounges.\n\n"
+                            f"⭐ **Zufrieden mit deinem Einkauf?**\n"
+                            f"> Wir würden uns riesig über eine gute Bewertung im Kanal {vouch_mention} freuen! 💬",
                 color=0x39ff14,
                 author_user=member,
                 bot_user=bot.user
@@ -1098,11 +1244,22 @@ async def create_roles_command(ctx):
     progress_embed.description = f"> 👑 Rollen geprüft: **{roles_created_count} erstellt**, **{roles_skipped_count} übersprungen**.\n> 🔒 Setze jetzt Berechtigungen für alle Kanäle..."
     await status_msg.edit(embed=progress_embed)
 
-    info_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, send_messages=False, add_reactions=True, read_message_history=True)}
+    stats_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, connect=False)}
+    verify_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)}
+    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner, r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
+        if r != r_everyone: verify_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
+
+    info_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
     for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
         if r != r_everyone: info_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
     for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
         if r != r_everyone: info_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
+
+    community_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
+    for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
+        if r != r_everyone: community_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
+    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
+        if r != r_everyone: community_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True, add_reactions=True, read_message_history=True)
 
     staff_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
     for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
@@ -1123,8 +1280,12 @@ async def create_roles_command(ctx):
                 await channel.edit(overwrites=log_overwrites)
             elif channel.category and "STAFF" in channel.category.name.upper():
                 await channel.edit(overwrites=staff_overwrites)
-            elif channel.category and ("INFO" in channel.category.name.upper() or "SHOP" in channel.category.name.upper() or "SUPPORT" in channel.category.name.upper() or "VERIFY" in channel.category.name.upper()):
-                await channel.edit(overwrites=info_overwrites)
+            elif channel.category and "STATS" in channel.category.name.upper():
+                await channel.edit(overwrites=stats_overwrites)
+            elif (channel.category and "VERIFY" in channel.category.name.upper()) or channel.name in ["👋│willkommen", "willkommen", "🔐│verify-here", "verify-here"]:
+                await channel.edit(overwrites=verify_overwrites)
+            elif channel.category and ("INFO" in channel.category.name.upper() or "SHOP" in channel.category.name.upper() or "SUPPORT" in channel.category.name.upper() or "CHAT" in channel.category.name.upper() or "TALK" in channel.category.name.upper()):
+                await channel.edit(overwrites=info_overwrites if "CHAT" not in channel.category.name.upper() and "TALK" not in channel.category.name.upper() else community_overwrites)
             channels_processed += 1
             await asyncio.sleep(0.1)
         except Exception:
@@ -1177,6 +1338,47 @@ class SetupConfirmationView(discord.ui.View):
         await interaction.response.defer()
         self.value = "cancel"
         self.stop()
+
+
+@bot.command(name="invites", aliases=["Invites", "einladungen", "invite"])
+@commands.guild_only()
+async def check_invites_command(ctx, target_user: discord.Member = None):
+    """Zeigt an, wie viele Einladungen ein User insgesamt besitzt."""
+    user = target_user or ctx.author
+    guild = ctx.guild
+    
+    total_invs = 0
+    inv_codes = []
+    try:
+        guild_invites = await guild.invites()
+        for inv in guild_invites:
+            if inv.inviter and inv.inviter.id == user.id:
+                total_invs += inv.uses
+                inv_codes.append(f"`{inv.code}` ({inv.uses}x)")
+    except Exception:
+        pass
+        
+    codes_str = ", ".join(inv_codes) if inv_codes else "*Keine aktiven Links*"
+    
+    embed = create_prestige_embed(
+        title=f"📩 Invite-Statistik: {user.name}",
+        description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                    f"> 📈 **Gesamte Einladungen:** `{total_invs}`\n\n"
+                    f"**Aktive Invite-Links:**\n"
+                    f"> {codes_str}\n\n"
+                    f"*Lade weitere Freunde ein, um dir im Kanal <#invites_id> Prämien abzuholen!*",
+        color=0x00f0ff,
+        author_user=user,
+        bot_user=bot.user
+    )
+    inv_channel = discord.utils.get(guild.text_channels, name="📩│invites") or discord.utils.get(guild.text_channels, name="invites")
+    if inv_channel:
+        embed.description = embed.description.replace("<#invites_id>", inv_channel.mention)
+    else:
+        embed.description = embed.description.replace("<#invites_id>", "`#invites`")
+        
+    embed.set_thumbnail(url=user.display_avatar.url)
+    await ctx.send(embed=embed)
 
 
 @bot.command(name="Start", aliases=["start"])
@@ -1255,13 +1457,22 @@ async def start(ctx):
     r_co_owner = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿") or r_everyone
     r_owner = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿") or r_everyone
 
-    info_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, send_messages=False, add_reactions=True, read_message_history=True)}
+    stats_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, connect=False)}
+    verify_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)}
+    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner, r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
+        if r != r_everyone: verify_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
+
+    info_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
     for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
         if r != r_everyone: info_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
     for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
         if r != r_everyone: info_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
 
-    community_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True, add_reactions=True, read_message_history=True)}
+    community_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
+    for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
+        if r != r_everyone: community_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
+    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
+        if r != r_everyone: community_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True, add_reactions=True, read_message_history=True)
 
     staff_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
     for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
@@ -1282,7 +1493,7 @@ async def start(ctx):
     categories_layout = [
         {
             "name": "📊│── 𝗩𝗢𝗜𝗗 • 𝗦𝗧𝗔𝗧𝗦 ──",
-            "overwrites": info_overwrites,
+            "overwrites": stats_overwrites,
             "channels": [
                 {"name": "👥│Mitglieder: 0", "type": "voice", "description": ""},
                 {"name": "💎│Booster: 0", "type": "voice", "description": ""},
@@ -1291,8 +1502,9 @@ async def start(ctx):
         },
         {
             "name": "🔐│── 𝗩𝗢𝗜𝗗 • 𝗩𝗘𝗥𝗜𝗙𝗬 ──",
-            "overwrites": info_overwrites,
+            "overwrites": verify_overwrites,
             "channels": [
+                {"name": "👋│willkommen", "type": "text", "description": "Begrüßungskanal für neue Mitglieder"},
                 {"name": "🔐│verify-here", "type": "text", "description": "Klicke unten auf den Button, um dich freizuschalten!"}
             ]
         },
@@ -1302,7 +1514,6 @@ async def start(ctx):
             "channels": [
                 {"name": "📢│news", "type": "text", "description": "Wichtige Ankündigungen & News"},
                 {"name": "📜│rules", "type": "text", "description": "Das Serverregelwerk"},
-                {"name": "👋│willkommen", "type": "text", "description": "Begrüßungskanal für neue Mitglieder"},
                 {"name": "💨│aufwiedersehen", "type": "text", "description": "Verabschiedungskanal"},
                 {"name": "🎁│giveaways", "type": "text", "description": "Spannende Giveaways & Gewinne"},
                 {"name": "🤝│vouches", "type": "text", "description": "Erfahrungen unserer Käufer"},
@@ -1879,17 +2090,42 @@ async def on_member_join(member):
         embed.set_thumbnail(url=member.display_avatar.url)
         await log_channel.send(embed=embed)
 
-    if invite_log_channel and used_invite:
-        embed_inv = create_prestige_embed(
-            title="📩 Einladung genutzt",
-            description=f"> {member.mention} ist beigetreten mit der Einladung von {used_invite.inviter.mention}.\n\n"
-                        f"**Code:** `{used_invite.code}`\n"
-                        f"**Nutzungen:** {used_invite.uses}",
-            color=0xffa500,
-            author_user=used_invite.inviter,
-            bot_user=bot.user
-        )
-        await invite_log_channel.send(embed=embed_inv)
+    if used_invite:
+        total_invs = 0
+        try:
+            curr_invs = bot.invites_cache.get(guild.id, [])
+            total_invs = sum(i.uses for i in curr_invs if i.inviter and i.inviter.id == used_invite.inviter.id)
+        except Exception:
+            total_invs = used_invite.uses
+
+        invites_pub_channel = discord.utils.get(guild.text_channels, name="📩│invites") or discord.utils.get(guild.text_channels, name="invites")
+        if invites_pub_channel:
+            embed_pub_inv = create_prestige_embed(
+                title="🎉 Neuer Server-Beitritt über Einladung!",
+                description=f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                            f"> Herzlich willkommen, {member.mention}!\n\n"
+                            f"Eingeladen von: **{used_invite.inviter.mention}**\n"
+                            f"> 📈 **Gesamte Invites von {used_invite.inviter.name}:** `{total_invs}`\n\n"
+                            f"*Sammle ebenfalls Invites, um dir exklusive Belohnungen aus dem Shop zu sichern!*",
+                color=0x39ff14,
+                author_user=used_invite.inviter,
+                bot_user=bot.user
+            )
+            embed_pub_inv.set_thumbnail(url=member.display_avatar.url)
+            await invites_pub_channel.send(embed=embed_pub_inv)
+
+        if invite_log_channel:
+            embed_inv = create_prestige_embed(
+                title="📩 Einladung genutzt",
+                description=f"> {member.mention} ist beigetreten mit der Einladung von {used_invite.inviter.mention}.\n\n"
+                            f"**Code:** `{used_invite.code}`\n"
+                            f"**Code-Nutzungen:** {used_invite.uses}\n"
+                            f"**Gesamte Invites des Users:** `{total_invs}`",
+                color=0xffa500,
+                author_user=used_invite.inviter,
+                bot_user=bot.user
+            )
+            await invite_log_channel.send(embed=embed_inv)
 
 @bot.event
 async def on_member_remove(member):
