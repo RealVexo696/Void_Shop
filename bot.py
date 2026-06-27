@@ -254,6 +254,14 @@ FAQ_KEYWORDS = {
 TICKET_INACTIVITY_HOURS = 8
 TICKET_AUTO_ARCHIVE_HOURS = 72
 VOUCH_REMINDER_DELAY_MINUTES = 15
+SETUP_ROLE_DELAY = 0.03
+SETUP_CATEGORY_DELAY = 0.04
+SETUP_CHANNEL_DELAY = 0.03
+SETUP_PERMISSION_DELAY = 0.05
+SETUP_PANEL_DELAY = 0.05
+PREVERIFY_VISIBLE_CHANNELS = {
+    "📜・regeln", "🎉・willkommen", "✅・verify", "🛒・how-to-buy", "❓・faq", "🔗・links"
+}
 
 SAFE_DOMAINS = [
     "roblox.com","www.roblox.com","web.roblox.com",
@@ -1680,14 +1688,14 @@ async def wipe_managed_server(guild:discord.Guild, status_message=None, keep_cha
         try:
             await ch.delete(reason="Void_Shop Komplett neu aufsetzen")
             deleted["channels"] += 1
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(SETUP_CHANNEL_DELAY)
         except Exception as e:
             print(f"[RESET channel] {ch} {e}")
     for cat in sorted(list(guild.categories), key=lambda c: getattr(c, "position", 0), reverse=True):
         try:
             await cat.delete(reason="Void_Shop Komplett neu aufsetzen")
             deleted["categories"] += 1
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(SETUP_CHANNEL_DELAY)
         except Exception as e:
             print(f"[RESET category] {cat} {e}")
     for role in sorted(list(guild.roles), key=lambda r: r.position, reverse=True):
@@ -1696,7 +1704,7 @@ async def wipe_managed_server(guild:discord.Guild, status_message=None, keep_cha
         try:
             await role.delete(reason="Void_Shop Komplett neu aufsetzen")
             deleted["roles"] += 1
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(SETUP_CHANNEL_DELAY)
         except Exception as e:
             print(f"[RESET role] {role} {e}")
     reset_runtime_state()
@@ -1715,14 +1723,22 @@ async def apply_server_permissions(guild:discord.Guild):
 
     member_like_roles = [r for r in [member_role, verified_role, customer_role, vip_role, booster_role] if r]
 
-    def base_public_overwrites(show_to_members:bool=True):
-        ow = {
-            default_role: discord.PermissionOverwrite(view_channel=False),
-        }
+    def base_public_overwrites(show_to_members: bool = True):
+        ow = {default_role: discord.PermissionOverwrite(view_channel=False)}
         if unverified:
             ow[unverified] = discord.PermissionOverwrite(view_channel=False)
         for role in member_like_roles:
             ow[role] = discord.PermissionOverwrite(view_channel=show_to_members, send_messages=True, read_message_history=True)
+        for role in staff_roles:
+            ow[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+        return ow
+
+    def preverify_overwrites(can_send: bool = False):
+        ow = {default_role: discord.PermissionOverwrite(view_channel=True, send_messages=can_send, read_message_history=True)}
+        if unverified:
+            ow[unverified] = discord.PermissionOverwrite(view_channel=True, send_messages=can_send, read_message_history=True)
+        for role in member_like_roles:
+            ow[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
         for role in staff_roles:
             ow[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
         return ow
@@ -1733,30 +1749,29 @@ async def apply_server_permissions(guild:discord.Guild):
                 await category.edit(overwrites=base_public_overwrites(show_to_members=False), reason="Void_Shop Permissions")
             else:
                 await category.edit(overwrites=base_public_overwrites(show_to_members=True), reason="Void_Shop Permissions")
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(SETUP_PERMISSION_DELAY)
         except Exception as e:
             print(f"[PERM category] {category.name}: {e}")
 
+    log_channel_names = {name for name, _ in LOG_CHANNEL_DEFS}
     for channel in guild.channels:
         try:
-            if getattr(channel, 'name', '') == "✅・verify":
-                overwrites = {
-                    default_role: discord.PermissionOverwrite(view_channel=False),
-                }
-                if unverified:
-                    overwrites[unverified] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+            ch_name = getattr(channel, 'name', '')
+            if ch_name == "✅・verify":
+                overwrites = preverify_overwrites(can_send=True)
                 for role in member_like_roles:
                     overwrites[role] = discord.PermissionOverwrite(view_channel=False)
-                for role in staff_roles:
-                    overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
-                await channel.edit(overwrites=overwrites, reason="Void_Shop Verify only for unverified")
+                await channel.edit(overwrites=overwrites, reason="Void_Shop Verify visible before member access")
+            elif ch_name in PREVERIFY_VISIBLE_CHANNELS:
+                can_send = ch_name in {"✅・verify"}
+                await channel.edit(overwrites=preverify_overwrites(can_send=can_send), reason="Void_Shop pre-verify onboarding area")
             elif getattr(channel, 'category', None) and channel.category.name in PRIVATE_CATEGORIES:
                 await channel.edit(overwrites=base_public_overwrites(show_to_members=False), reason="Void_Shop private area")
-            elif channel.name in {name for name, _ in LOG_CHANNEL_DEFS}:
+            elif ch_name in log_channel_names:
                 await channel.edit(overwrites=base_public_overwrites(show_to_members=False), reason="Void_Shop log area")
             else:
                 await channel.edit(overwrites=base_public_overwrites(show_to_members=True), reason="Void_Shop member area")
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(SETUP_PERMISSION_DELAY)
         except Exception as e:
             print(f"[PERM channel] {getattr(channel, 'name', channel)}: {e}")
 
@@ -1795,7 +1810,7 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
                 )
                 existing_roles[name] = role
                 created["roles"] += 1
-                await asyncio.sleep(0.08)
+                await asyncio.sleep(SETUP_ROLE_DELAY)
             except Exception as e:
                 role_failures.append(f"{name}: {e}")
                 print(f"[ROLE] {name}: {e}")
@@ -1824,7 +1839,7 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
         try:
             c = await guild.create_category(name, reason="Void_Shop v5")
             created["categories"] += 1
-            await asyncio.sleep(0.12)
+            await asyncio.sleep(SETUP_CATEGORY_DELAY)
             return c
         except Exception as e:
             channel_failures.append(f"Kategorie {name}: {e}")
@@ -1842,7 +1857,7 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
                     else:
                         ch = await guild.create_text_channel(ch_name, category=cat, topic=topic[:1024] if topic else None, reason="Void_Shop v5")
                     created["channels"] += 1
-                    await asyncio.sleep(0.08)
+                    await asyncio.sleep(SETUP_ROLE_DELAY)
                 except Exception as e:
                     channel_failures.append(f"{ch_name}: {e}")
                     print(f"[CH] {ch_name} {e}")
@@ -1882,7 +1897,7 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
                         overwrites[role] = discord.PermissionOverwrite(view_channel=True, read_message_history=True)
                 ch = await guild.create_text_channel(ch_name, category=log_cat, overwrites=overwrites, reason="Void_Shop Logs")
                 created["channels"] += 1
-                await asyncio.sleep(0.08)
+                await asyncio.sleep(SETUP_ROLE_DELAY)
             except Exception as e:
                 channel_failures.append(f"{ch_name}: {e}")
                 print(f"[LOG] {e}")
@@ -1912,7 +1927,7 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
                 overwrites = {guild.default_role: discord.PermissionOverwrite(connect=False, view_channel=True)}
                 ch = await guild.create_voice_channel(name, category=stats_cat, overwrites=overwrites, reason="Void_Shop Stats")
                 created["channels"] += 1
-                await asyncio.sleep(0.08)
+                await asyncio.sleep(SETUP_ROLE_DELAY)
             except Exception as e:
                 channel_failures.append(f"{name}: {e}")
                 print(f"[STATS] {e}")
@@ -1947,7 +1962,7 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
             pass
         try:
             await ch.send(embed=embed, view=view)
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(SETUP_PANEL_DELAY)
         except Exception as e:
             channel_failures.append(f"Panel {embed.title}: {e}")
             print(f"[PANEL] {e}")
