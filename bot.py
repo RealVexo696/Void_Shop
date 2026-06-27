@@ -1157,96 +1157,92 @@ async def close_ticket_final(channel:discord.TextChannel, feedback_user:discord.
             pass
 
 # ---------- VERIFY ----------
+async def link_roblox_account(member:discord.Member, roblox_name:str):
+    roblox_name = (roblox_name or '').strip().lstrip('@')
+    if not roblox_name:
+        return False, "Bitte gib einen Roblox @Namen ein."
+    res = await roblox_username_to_id(roblox_name)
+    if not res:
+        return False, f"Roblox-User **{roblox_name}** wurde nicht gefunden."
+    roblox_id, display = res
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT discord_id FROM users WHERE roblox_id=? AND discord_id!=?", (roblox_id, member.id))
+        other = await cur.fetchone()
+        if other:
+            return False, "Dieser Roblox-Account ist bereits mit einem anderen Discord-User verknüpft."
+        cur = await db_execute(db, "SELECT verified FROM users WHERE discord_id=?", (member.id,))
+        existing = await cur.fetchone()
+        already_verified = False
+        if existing:
+            try:
+                already_verified = bool(existing[0])
+            except Exception:
+                already_verified = bool(existing["verified"])
+        await db_execute(db,
+            "INSERT INTO users(discord_id,roblox_id,roblox_name,verified,verified_at,last_activity_at,coins) VALUES(?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,COALESCE((SELECT coins FROM users WHERE discord_id=?),0)) ON CONFLICT(discord_id) DO UPDATE SET roblox_id=excluded.roblox_id, roblox_name=excluded.roblox_name, verified=1, verified_at=CURRENT_TIMESTAMP, last_activity_at=CURRENT_TIMESTAMP",
+            (member.id, roblox_id, roblox_name, 1, member.id))
+        await db_commit(db)
+    try:
+        guild = member.guild
+        ur = guild.get_role(ROL("unverified")) if ROL("unverified") else None
+        if ur and ur in member.roles:
+            await member.remove_roles(ur, reason="Void Shop Verify abgeschlossen")
+        for rk in ["verified", "member"]:
+            rid = ROL(rk)
+            if rid:
+                role = guild.get_role(rid)
+                if role and role not in member.roles:
+                    await member.add_roles(role, reason="Void Shop Roblox Verify")
+    except Exception as e:
+        print(f"[verify roles] {e}")
+    if not already_verified:
+        await add_coins(member.id, COIN_REWARDS["verify"], "verify_roblox_direct", roblox_name)
+    await touch_user_activity(member.id)
+    log_emb = make_embed("🔐 Roblox Verify Erfolg", f"{member.mention} → **{display}** (`{roblox_id}`)\nName: `@{roblox_name}`", 0x2ecc71, member)
+    await send_log(bot, "verify", log_emb, discord_id=member.id)
+    return True, {"display": display, "roblox_id": roblox_id, "already_verified": already_verified}
+
+class RobloxVerifyModal(discord.ui.Modal, title="Void Shop Roblox Verify"):
+    roblox_name = discord.ui.TextInput(
+        label="Dein Roblox @Name",
+        placeholder="z. B. RealVexo696",
+        required=True,
+        max_length=32
+    )
+
+    async def on_submit(self, interaction:discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        ok, result = await link_roblox_account(interaction.user, str(self.roblox_name))
+        if not ok:
+            return await interaction.followup.send(f"❌ {result}", ephemeral=True)
+        coins_text = "Keine doppelten Verify-Coins vergeben." if result["already_verified"] else f"+{COIN_REWARDS['verify']} Coins gutgeschrieben."
+        emb = discord.Embed(
+            title="✅ Erfolgreich verifiziert!",
+            description=(
+                f"Discord wurde direkt mit **{result['display']}** verbunden.\n"
+                f"Roblox-ID: `{result['roblox_id']}`\n\n"
+                f"{coins_text}\n"
+                "Du siehst jetzt alle Member-Kanäle."
+            ),
+            color=0x2ecc71,
+            timestamp=datetime.datetime.utcnow()
+        )
+        await interaction.followup.send(embed=emb, ephemeral=True)
+
 class OneClickVerifyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-    @discord.ui.button(label="✅ Discord-Zugang freischalten", style=discord.ButtonStyle.green, custom_id="oneclick_verify_v2u", emoji="🔓")
+
+    @discord.ui.button(label="✅ Verify & Roblox verbinden", style=discord.ButtonStyle.green, custom_id="void_verify_modal", emoji="🔓")
     async def verify_btn(self, interaction:discord.Interaction, button:discord.ui.Button):
-        guild = interaction.guild; user = interaction.user
-        member_role_id = ROL("member") or ROL("verified")
-        unverified_id = ROL("unverified")
-        try:
-            member_role = guild.get_role(member_role_id) if member_role_id else None
-            already_verified = bool(member_role and member_role in user.roles)
-            if member_role and member_role not in user.roles:
-                await user.add_roles(member_role, reason="Discord Access Verify")
-            if unverified_id:
-                ur = guild.get_role(unverified_id)
-                if ur and ur in user.roles:
-                    await user.remove_roles(ur, reason="Discord access granted")
-            if not already_verified:
-                await add_coins(user.id, COIN_REWARDS["verify"], "verify_oneclick")
-                coin_txt = f"+{COIN_REWARDS['verify']} Coins gutgeschrieben."
-            else:
-                coin_txt = "Du warst bereits freigeschaltet – keine doppelten Coins vergeben."
-            await interaction.response.send_message(
-                f"✅ Server-Zugang freigeschaltet, {user.mention}!\n{coin_txt}\n\n🔐 **Für Roblox-Käufe und 100 % Identitätsprüfung nutze zusätzlich:** `!verify DeinRobloxName`",
-                ephemeral=True
-            )
-            log_emb = make_embed("🔓 Discord-Zugang freigeschaltet", f"{user.mention} hat den Serverzugang per 1-Klick freigeschaltet.\nHinweis: Roblox-Shop-Verify bleibt `!verify Name`.", 0x2ecc71, user)
-            await send_log(bot, "verify", log_emb, discord_id=user.id)
-            await touch_user_activity(user.id)
-        except Exception as e:
-            if interaction.response.is_done():
-                await interaction.followup.send(f"⚠️ Fehler: {e}", ephemeral=True)
-            else:
-                await interaction.response.send_message(f"⚠️ Fehler: {e}", ephemeral=True)
+        member_role = interaction.guild.get_role(ROL("member")) if ROL("member") else None
+        verified_role = interaction.guild.get_role(ROL("verified")) if ROL("verified") else None
+        if (member_role and member_role in interaction.user.roles) or (verified_role and verified_role in interaction.user.roles):
+            return await interaction.response.send_message("✅ Du bist bereits verifiziert und siehst schon alle Member-Kanäle.", ephemeral=True)
+        await interaction.response.send_modal(RobloxVerifyModal())
 
-class VerifyView(discord.ui.View):
-    def __init__(self, discord_id, roblox_id, roblox_name, code):
-        super().__init__(timeout=300)
-        self.discord_id=discord_id; self.roblox_id=roblox_id
-        self.roblox_name=roblox_name; self.code=code
-    @discord.ui.button(label="✅ Bestätigen", style=discord.ButtonStyle.green)
-    async def confirm(self, interaction:discord.Interaction, button:discord.ui.Button):
-        if interaction.user.id != self.discord_id:
-            return await interaction.response.send_message("Nicht dein Verify!", ephemeral=True)
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        ok = await check_bio_code(self.roblox_id, self.code)
-        if not ok:
-            emb = discord.Embed(title="❌ Code nicht gefunden",
-                description=f"Ich sehe `{self.code}` **nicht** in deiner Roblox Bio.\n\n1. https://www.roblox.com/users/{self.roblox_id}/profile\n2. Bearbeiten → Beschreibung → `{self.code}` einfügen\n3. Speichern → hier nochmal Bestätigen",
-                color=0xe74c3c)
-            return await interaction.followup.send(embed=emb, ephemeral=True)
-        async with get_db() as db:
-            await db_execute(db,
-                "INSERT INTO users(discord_id,roblox_id,roblox_name,verified,verified_at,coins) VALUES(?,?,?,?,CURRENT_TIMESTAMP,COALESCE((SELECT coins FROM users WHERE discord_id=?),0)) ON CONFLICT(discord_id) DO UPDATE SET roblox_id=excluded.roblox_id, roblox_name=excluded.roblox_name, verified=1, verified_at=CURRENT_TIMESTAMP",
-                (self.discord_id, self.roblox_id, self.roblox_name, self.discord_id))
-            await db_execute(db, "DELETE FROM verify_codes WHERE discord_id=?", (self.discord_id,))
-            await db_commit(db)
-        try:
-            guild = interaction.guild
-            if guild:
-                ur_id = ROL("unverified")
-                if ur_id:
-                    ur = guild.get_role(ur_id)
-                    if ur:
-                        try: await interaction.user.remove_roles(ur, reason="Roblox verified")
-                        except: pass
-                for rk in ["verified","member"]:
-                    rid = ROL(rk)
-                    if rid:
-                        r = guild.get_role(rid)
-                        if r:
-                            try: await interaction.user.add_roles(r, reason="Roblox Bio Verify")
-                            except: pass
-        except: pass
-        await add_coins(self.discord_id, COIN_REWARDS["verify"], "verify_bio")
-        await touch_user_activity(self.discord_id)
-        emb = discord.Embed(title="✅ Verifiziert!",
-            description=f"Willkommen **{self.roblox_name}**!\nRoblox ID: `{self.roblox_id}`\n\n+{COIN_REWARDS['verify']} Void-Coins gutgeschrieben!",
-            color=0x2ecc71)
-        await interaction.followup.send(embed=emb, ephemeral=True)
-        log_emb = make_embed("🔐 Bio-Verify Erfolg", f"{interaction.user.mention} → **{self.roblox_name}** (`{self.roblox_id}`)\nCode: `{self.code}`", 0x2ecc71, interaction.user)
-        await send_log(bot, "verify", log_emb, discord_id=self.discord_id)
-        self.stop()
-    @discord.ui.button(label="❌ Abbrechen", style=discord.ButtonStyle.red)
-    async def cancel(self, interaction:discord.Interaction, button:discord.ui.Button):
-        if interaction.user.id != self.discord_id:
-            return await interaction.response.send_message("Nicht dein Verify!", ephemeral=True)
-        await interaction.response.send_message("Abgebrochen.", ephemeral=True)
-        self.stop()
-
+# =====================================================================
+#  🚀  !start – SERVER SETUP
 # =====================================================================
 #  🚀  !start – SERVER SETUP
 # =====================================================================
@@ -1306,10 +1302,12 @@ CHANNELS_SETUP = [
         ("📢・ankündigungen", "text", "📢 Offizielle Ankündigungen"),
         ("🎉・willkommen", "text", "Herzlich Willkommen bei Void Shop!"),
         ("👋・auf-wiedersehen", "text", "Auf Wiedersehen Nachrichten"),
-        ("✅・verify", "text", "Ein-Klick Verifizierung"),
+        ("✅・verify", "text", "Klicke auf den Button und gib deinen Roblox Namen ein"),
         ("🛒・how-to-buy", "text", "So kaufst du bei uns"),
         ("❓・faq", "text", "Häufige Fragen"),
         ("🔗・links", "text", "Wichtige Links"),
+        ("📡・server-status", "text", "Server / Bot Status"),
+        ("📰・changelog", "text", "Updates und Änderungen"),
     ]),
     ("🛍️ SHOP", [
         ("🛒・produkte", "text", "Unsere Produkte Übersicht"),
@@ -1319,6 +1317,11 @@ CHANNELS_SETUP = [
         ("🛡️・anti-alt-ban", "text", "Anti Alt Ban Info"),
         ("💰・preise", "text", "Preisliste"),
         ("🎁・angebote", "text", "Aktuelle Angebote"),
+        ("📦・bundles", "text", "Bundle Deals und Pakete"),
+        ("🧾・bestellungen", "text", "Bestellstatus und Kaufhinweise"),
+        ("🚀・releases", "text", "Neue Releases und Updates"),
+        ("💎・premium", "text", "Premium Produkte und VIP Infos"),
+        ("🏷️・kundenrollen", "text", "Erklärung aller Kundenrollen"),
     ]),
     ("💬 COMMUNITY", [
         ("💬・allgemein", "text", "Allgemeiner Chat"),
@@ -1329,13 +1332,21 @@ CHANNELS_SETUP = [
         ("💡・vorschläge", "text", "Vorschläge für den Shop"),
         ("🐛・bug-reports", "text", "Fehler melden"),
         ("🌍・international", "text", "English / International Chat"),
+        ("👋・vorstellungen", "text", "Stell dich der Community vor"),
+        ("😂・memes", "text", "Memes und Fun"),
+        ("📊・polls", "text", "Abstimmungen und Umfragen"),
+        ("❔・qotd", "text", "Question of the day"),
     ]),
     ("⭐ BEWERTUNGEN", [
         ("⭐・vouches", "text", "Kundenbewertungen – 5⭐ hier posten = +30 Coins!"),
         ("🏆・top-kunden", "text", "Top Kunden des Monats"),
+        ("📷・proof-media", "text", "Beweise / Screenshots von Käufen"),
+        ("🤝・trusted-buyers", "text", "Unsere trusted Kunden"),
+        ("🎯・milestones", "text", "Community- und Verkaufs-Meilensteine"),
     ]),
     ("🎫 TICKETS", [
         ("🎫・ticket-erstellen", "text", "Erstelle hier dein Ticket – 3 Optionen: Produkt kaufen / Support / Partnerschaft"),
+        ("📌・ticket-faq", "text", "Wie Tickets, Claims und Support funktionieren"),
     ]),
     ("🎙️ VOICE", [
         ("💬・Lobby", "voice", ""),
@@ -1343,9 +1354,32 @@ CHANNELS_SETUP = [
         ("🎵・Musik", "voice", ""),
         ("🔒・Support Warteraum", "voice", ""),
         ("👑・Staff Only", "voice", ""),
+        ("🌙・Chill", "voice", ""),
+        ("😴・AFK", "voice", ""),
+        ("🛒・Kunden Lounge", "voice", ""),
+    ]),
+    ("🧩 ROBLOX RESOURCES", [
+        ("📚・guides", "text", "Anleitungen und Tutorials"),
+        ("⚙️・configs", "text", "Configs und Setups"),
+        ("🆕・updates", "text", "Roblox / Produkt Updates"),
+        ("🎨・showcases", "text", "Zeige deine Ergebnisse"),
+        ("🧠・request-features", "text", "Feature Wünsche für Produkte"),
+        ("🗃️・archive-resources", "text", "Archivierte Ressourcen"),
+        ("📦・downloads-info", "text", "Infos zu Dateien und Downloads"),
+    ]),
+    ("🛠️ STAFF HQ", [
+        ("🧾・staff-chat", "text", "Interner Staff Chat"),
+        ("📥・claims", "text", "Claim Koordination"),
+        ("🚨・reports", "text", "Reports und Eskalationen"),
+        ("🤝・partner-management", "text", "Partnerschaftsverwaltung"),
+        ("🗂️・crm-notes", "text", "Kundennotizen und CRM Hinweise"),
+        ("💸・payouts", "text", "Auszahlungen und Finanzen"),
+        ("📣・staff-announcements", "text", "Staff Ankündigungen"),
+        ("👑・owner-office", "text", "Owner / Management Office"),
     ]),
 ]
 
+PRIVATE_CATEGORIES = {"📊 LOGS", "🛠️ STAFF HQ"}
 LOG_CHANNEL_DEFS = [
     ("📥・join-logs","join"),
     ("📤・leave-logs","leave"),
@@ -1409,6 +1443,63 @@ async def wipe_managed_server(guild:discord.Guild, status_message=None, keep_cha
     reset_runtime_state()
     save_runtime()
     return deleted
+
+async def apply_server_permissions(guild:discord.Guild):
+    default_role = guild.default_role
+    unverified = guild.get_role(ROL("unverified"))
+    member_role = guild.get_role(ROL("member")) or guild.get_role(ROL("verified"))
+    verified_role = guild.get_role(ROL("verified"))
+    customer_role = guild.get_role(ROL("customer"))
+    vip_role = guild.get_role(ROL("vip"))
+    booster_role = guild.get_role(ROL("booster"))
+    staff_roles = [role for role in guild.roles if role.id in staff_role_ids()]
+
+    member_like_roles = [r for r in [member_role, verified_role, customer_role, vip_role, booster_role] if r]
+
+    def base_public_overwrites(show_to_members:bool=True):
+        ow = {
+            default_role: discord.PermissionOverwrite(view_channel=False),
+        }
+        if unverified:
+            ow[unverified] = discord.PermissionOverwrite(view_channel=False)
+        for role in member_like_roles:
+            ow[role] = discord.PermissionOverwrite(view_channel=show_to_members, send_messages=True, read_message_history=True)
+        for role in staff_roles:
+            ow[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+        return ow
+
+    for category in guild.categories:
+        try:
+            if category.name in PRIVATE_CATEGORIES:
+                await category.edit(overwrites=base_public_overwrites(show_to_members=False), reason="Void_Shop Permissions")
+            else:
+                await category.edit(overwrites=base_public_overwrites(show_to_members=True), reason="Void_Shop Permissions")
+            await asyncio.sleep(0.2)
+        except Exception as e:
+            print(f"[PERM category] {category.name}: {e}")
+
+    for channel in guild.channels:
+        try:
+            if getattr(channel, 'name', '') == "✅・verify":
+                overwrites = {
+                    default_role: discord.PermissionOverwrite(view_channel=False),
+                }
+                if unverified:
+                    overwrites[unverified] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                for role in member_like_roles:
+                    overwrites[role] = discord.PermissionOverwrite(view_channel=False)
+                for role in staff_roles:
+                    overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+                await channel.edit(overwrites=overwrites, reason="Void_Shop Verify only for unverified")
+            elif getattr(channel, 'category', None) and channel.category.name in PRIVATE_CATEGORIES:
+                await channel.edit(overwrites=base_public_overwrites(show_to_members=False), reason="Void_Shop private area")
+            elif channel.name in {name for name, _ in LOG_CHANNEL_DEFS}:
+                await channel.edit(overwrites=base_public_overwrites(show_to_members=False), reason="Void_Shop log area")
+            else:
+                await channel.edit(overwrites=base_public_overwrites(show_to_members=True), reason="Void_Shop member area")
+            await asyncio.sleep(0.2)
+        except Exception as e:
+            print(f"[PERM channel] {getattr(channel, 'name', channel)}: {e}")
 
 async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status_message, mode:str="add"):
     created = {"roles":0,"channels":0,"categories":0}
@@ -1541,8 +1632,11 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
                 continue
         RUNTIME[rkey] = ch.id
 
-    await status_message.edit(content="🚀 **5/7 Berechtigungen & Security-Hinweise …**")
-    # Feintuning der Channel-Permissions kann pro Server individuell nachgezogen werden.
+    await status_message.edit(content="🚀 **5/7 Berechtigungen & Sichtbarkeit setzen …**")
+    try:
+        await apply_server_permissions(guild)
+    except Exception as e:
+        print(f"[PERMISSIONS] {e}")
 
     await status_message.edit(content="🚀 **6/7 Panels posten / aktualisieren …**")
     async def post_panel(channel_id, embed, view=None):
@@ -1580,8 +1674,8 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
                 "• 🛡️ Anti Alt Ban\n\n"
                 "**🚀 Starte so:**\n"
                 f"1️⃣ Öffne <#{C('verify') or C('bot_commands') or status_message.channel.id}>\n"
-                "2️⃣ Schalte den Discord-Zugang frei\n"
-                "3️⃣ Nutze `!verify RobloxName` für Bulletproof Bio-Code-Auth\n"
+                "2️⃣ Klicke auf den Verify-Button und gib deinen Roblox @Namen ein\n"
+                "3️⃣ Nach dem Verify werden alle Member-Kanäle sichtbar\n"
                 "4️⃣ Danach kaufen → `!checkbuy` → Auto-Delivery\n\n"
                 "**💬 Support:** Ticket-System\n"
                 "**🪙 Treue:** Sammle Void-Coins + Invite-Rewards!\n\n"
@@ -1609,17 +1703,16 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
 
     if C("verify"):
         emb = discord.Embed(
-            title="🔐 Verifizierung & Shop-Freischaltung",
+            title="🔐 Verifizierung & Roblox-Verknüpfung",
             description=(
-                "**Schritt 1 – Discord-Zugang**\n"
-                "Klicke unten auf **Discord-Zugang freischalten** für Serverzugang +10 Coins.\n\n"
-                "**Schritt 2 – Bulletproof Roblox-Verify**\n"
-                "Nutze `!verify DeinRobloxName` im Bot-Channel.\n"
-                "Du erhältst einen Sicherheitscode wie `void-8392`, trägst ihn kurz in deine Roblox-Bio ein und klickst anschließend auf **Bestätigen**.\n\n"
-                "**Danach möglich:**\n"
-                "• `!checkbuy` → Kaufprüfung\n"
-                "• Auto-Delivery per DM in unter 5 Sekunden\n"
-                "• sichere Roblox-Identität ohne Fake-Namen"
+                "Klicke unten auf **Verify & Roblox verbinden**.\n\n"
+                "Danach öffnet sich ein Fenster, in das du einfach deinen **Roblox @Namen** eingibst.\n"
+                "Der Bot verbindet dein Discord-Konto direkt mit deinem Roblox-Profil und gibt dir automatisch die **Member-Rolle**.\n\n"
+                "**Nach dem Verify:**\n"
+                "• der Verify-Kanal verschwindet\n"
+                "• alle Member-Kanäle werden sichtbar\n"
+                "• `!checkbuy` und alle Shop-Funktionen sind nutzbar\n"
+                f"• du erhältst **+{COIN_REWARDS['verify']} Coins**"
             ),
             color=0x2ecc71
         )
@@ -1631,8 +1724,8 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
 
     if C("how_to_buy"):
         emb = discord.Embed(title="🛒 How to Buy – So kaufst du", description=(
-            "**1️⃣ Bulletproof verifizieren**\n"
-            "`!verify DeinRobloxName`\n\n"
+            "**1️⃣ Verifizieren**\n"
+            f"Im Kanal <#{C('verify') or status_message.channel.id}> auf den Button klicken und Roblox @Namen eingeben\n\n"
             "**2️⃣ Produkt wählen**\n"
             f"`!products` in <#{C('bot_commands') or C('general') or status_message.channel.id}>\n\n"
             "**3️⃣ Roblox Gamepass kaufen**\n"
@@ -1674,7 +1767,7 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
             "• **Premium FastFlags** – 250 R$\n"
             "• **FastFlags Ultra** – 499 R$\n"
             "• **Starter Bundle** – 75 R$\n\n"
-            "`!verify` → kaufen → `!checkbuy` → Auto-Delivery <5s"
+            "Verify-Button → kaufen → `!checkbuy` → Auto-Delivery <5s"
         ), color=0xff8800)
         await post_panel(ffid, emb)
         await post_panel(ffid, build_product_embed("fastflags_premium"))
@@ -1707,7 +1800,7 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
         await post_panel(C("offers"), offers)
     if C("faq"):
         faq = discord.Embed(title="❓ FAQ", description=(
-            "**Wie kaufe ich?** → `!verify` → kaufen → `!checkbuy`\n"
+            "**Wie kaufe ich?** → Verify-Button → kaufen → `!checkbuy`\n"
             "**Wie erhalte ich mein Produkt?** → automatisch per DM\n"
             "**Ich habe keine DM bekommen?** → Ticket öffnen\n"
             "**Wie bekomme ich Coins?** → Verify, Invites, Käufe, Vouches, Daily"
@@ -2002,8 +2095,8 @@ async def on_member_join(member):
                     "• ⚡ FastFlags • ☁️ Sky\n"
                     "• 👕 T-Shirt Template • 🛡️ Anti Alt Ban\n\n"
                     f"👉 **Starte hier:** <#{C('verify') or ch.id}>\n"
-                    "🔓 Discord-Zugang freischalten\n"
-                    "🔐 Danach `!verify DeinRobloxName` für Bulletproof Roblox-Verify\n\n"
+                    "🔓 Auf den Verify-Button klicken\n"
+                    "🎮 Dort deinen Roblox @Namen eingeben\n\n"
                     "💬 Fragen? Eröffne ein Ticket!\n"
                     "🪙 Sammle Void-Coins für Rabatte!\n"
                     "🎁 Lade Freunde ein und erhalte Invite-Rewards!\n\n"
@@ -2243,7 +2336,7 @@ async def on_guild_channel_update(before, after):
 async def help_cmd(ctx):
     e = discord.Embed(title="🛍️ Void_Shop v2 ULTIMATE – Befehle", color=0xFF2020)
     e.add_field(name="👑 Setup", value="`!start` – Setup-Assistent mit **Abbruch / Nur Hinzufügen / Komplett neu aufsetzen**", inline=False)
-    e.add_field(name="🔐 Verify", value="`!verify <RobloxName>` – sichere Bio-Code-Auth\nDiscord-Zugang im <#{}>".format(C("verify") or 0), inline=False)
+    e.add_field(name="🔐 Verify", value="Verify-Button im <#{}> öffnet ein Eingabefenster für deinen Roblox @Namen\nFallback: `!verify <RobloxName>`".format(C("verify") or 0), inline=False)
     e.add_field(name="🛍️ Shop", value="`!products` – Produkte anzeigen\n`!checkbuy` – Kauf prüfen + Auto-Delivery\n`!history [@user]` – Bestellhistorie", inline=False)
     e.add_field(name="🪙 Coins & Invites", value="`!coins` `!shop` `!redeem <150|300|500|800>` `!daily` `!coinlb` `!invites [@user]`", inline=False)
     e.add_field(name="🎫 Tickets", value="Ticket-Panel mit **Produkt kaufen / Support / Partnerschaft**\nClaim + Survey + Staff-Tracking", inline=False)
@@ -2253,34 +2346,23 @@ async def help_cmd(ctx):
 
 @bot.command(name="verify")
 async def verify_cmd(ctx, *, roblox_name:str=None):
+    if not ctx.guild:
+        return await ctx.send("❌ Bitte nutze `!verify` direkt auf dem Server im Verify-Kanal.")
     if not roblox_name:
-        return await ctx.send("Usage: `!verify DeinRobloxName`")
-    try: await ctx.message.delete()
-    except: pass
-    res = await roblox_username_to_id(roblox_name)
-    if not res:
-        return await ctx.send(f"❌ Roblox-User **{roblox_name}** nicht gefunden.", delete_after=15)
-    roblox_id, display = res
-    code = generate_bio_code()
-    async with get_db() as db:
-        await db_execute(db, "INSERT OR REPLACE INTO verify_codes(discord_id,roblox_id,roblox_name,code,created_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP)",
-            (ctx.author.id, roblox_id, roblox_name, code))
-        await db_commit(db)
+        return await ctx.send("Usage: `!verify DeinRobloxName` oder nutze den Button im Verify-Kanal.")
+    ok, result = await link_roblox_account(ctx.author, roblox_name)
+    if not ok:
+        return await ctx.send(f"❌ {result}", delete_after=20)
+    coin_txt = "Keine doppelten Verify-Coins vergeben." if result["already_verified"] else f"+{COIN_REWARDS['verify']} Coins gutgeschrieben."
     emb = discord.Embed(
-        title="🔐 Roblox Verifizierung – Bio-Code-Auth",
-        description=f"**Gefunden:** {display} (@{roblox_name})\nRoblox ID: `{roblox_id}`\n\n**Dein Sicherheitscode:**\n```\n{code}\n```\n\n**So geht's:**\n1️⃣ Kopiere den Code\n2️⃣ Profil: https://www.roblox.com/users/{roblox_id}/profile\n3️⃣ Bearbeiten → **Beschreibung** → Code einfügen → Speichern\n4️⃣ Unten **Bestätigen** klicken\n\n⏱️ 5 Minuten gültig.",
-        color=0x9b59b6)
-    emb.set_footer(text="Void_Shop • Bulletproof Verify")
-    view = VerifyView(ctx.author.id, roblox_id, roblox_name, code)
-    try:
-        await ctx.author.send(embed=emb, view=view)
-        await ctx.send(f"{ctx.author.mention} 📩 Check deine DMs!", delete_after=20)
-    except discord.Forbidden:
-        await ctx.send(embed=emb, view=view, delete_after=300)
-    await touch_user_activity(ctx.author.id)
-    log_emb = make_embed("🔐 Verify gestartet",
-        f"{ctx.author.mention} → **{roblox_name}** (`{roblox_id}`)\nCode: `{code}`",0x9b59b6,ctx.author)
-    await send_log(bot,"verify",log_emb,discord_id=ctx.author.id)
+        title="✅ Erfolgreich verifiziert!",
+        description=(
+            f"Discord wurde direkt mit **{result['display']}** verbunden.\n"
+            f"Roblox-ID: `{result['roblox_id']}`\n\n{coin_txt}"
+        ),
+        color=0x2ecc71
+    )
+    await ctx.send(embed=emb, delete_after=20)
 
 @bot.command(name="checkbuy")
 async def checkbuy_cmd(ctx):
