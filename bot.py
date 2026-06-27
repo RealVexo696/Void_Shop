@@ -113,7 +113,9 @@ RUNTIME = {
     # channels
     "welcome": int(os.getenv("WELCOME_CHANNEL_ID","0") or 0),
     "goodbye": 0, "rules":0, "announcements":0,
-    "verify":0, "how_to_buy":0, "fastflags":0, "products":0,
+    "verify":0, "how_to_buy":0, "fastflags":0, "sky":0,
+    "tshirt_template":0, "anti_alt_ban":0, "products":0, "prices":0,
+    "offers":0, "faq":0, "links":0, "invites":0,
     "vouches":0, "media":0, "general":0, "bot_commands":0,
     "ticket_create":0,
     # stats
@@ -253,9 +255,9 @@ SUSPICIOUS_KEYWORDS = [
 # =====================================================================
 DB_SCHEMA = """
 PRAGMA journal_mode=WAL;
-CREATE TABLE IF NOT EXISTS users(discord_id INTEGER PRIMARY KEY, roblox_id INTEGER, roblox_name TEXT, verified INTEGER DEFAULT 0, coins INTEGER DEFAULT 0, total_spent_robux INTEGER DEFAULT 0, purchases INTEGER DEFAULT 0, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, verified_at TIMESTAMP);
+CREATE TABLE IF NOT EXISTS users(discord_id INTEGER PRIMARY KEY, roblox_id INTEGER, roblox_name TEXT, verified INTEGER DEFAULT 0, coins INTEGER DEFAULT 0, total_spent_robux INTEGER DEFAULT 0, purchases INTEGER DEFAULT 0, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, verified_at TIMESTAMP, last_activity_at TIMESTAMP);
 CREATE TABLE IF NOT EXISTS verify_codes(discord_id INTEGER PRIMARY KEY, roblox_id INTEGER, roblox_name TEXT, code TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY AUTOINCREMENT, discord_id INTEGER, roblox_id INTEGER, product_key TEXT, gamepass_id INTEGER, robux_price INTEGER, delivered INTEGER DEFAULT 0, delivery_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY AUTOINCREMENT, discord_id INTEGER, roblox_id INTEGER, product_key TEXT, gamepass_id INTEGER, robux_price INTEGER, order_code TEXT, delivered INTEGER DEFAULT 0, delivery_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS deliveries(id INTEGER PRIMARY KEY AUTOINCREMENT, purchase_id INTEGER, discord_id INTEGER, product_key TEXT, delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, dm_message_id TEXT, success INTEGER DEFAULT 1);
 CREATE TABLE IF NOT EXISTS coins_ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, discord_id INTEGER, amount INTEGER, reason TEXT, meta TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS invites(inviter_id INTEGER, invited_id INTEGER PRIMARY KEY, invite_code TEXT, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, rewarded INTEGER DEFAULT 0);
@@ -266,6 +268,7 @@ CREATE TABLE IF NOT EXISTS vouches(id INTEGER PRIMARY KEY AUTOINCREMENT, discord
 CREATE TABLE IF NOT EXISTS revenue_daily(day TEXT PRIMARY KEY, robux INTEGER DEFAULT 0, purchases INTEGER DEFAULT 0, customers INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS tickets_open(channel_id INTEGER PRIMARY KEY, user_id INTEGER, type TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, closed INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS ticket_metrics(channel_id INTEGER PRIMARY KEY, claimed_by INTEGER, claimed_at TIMESTAMP, first_staff_response_at TIMESTAMP, closer_id INTEGER, closed_at TIMESTAMP, survey_product TEXT, survey_stars INTEGER);
+CREATE TABLE IF NOT EXISTS ticket_transcripts(channel_id INTEGER PRIMARY KEY, file_path TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS server_config(k TEXT PRIMARY KEY, v TEXT);
 """
 
@@ -318,10 +321,15 @@ else:
 async def init_db():
     async with get_db() as db:
         await db.executescript(DB_SCHEMA)
-        try:
-            await db_execute(db, "ALTER TABLE invites ADD COLUMN invite_code TEXT")
-        except Exception:
-            pass
+        for sql in [
+            "ALTER TABLE invites ADD COLUMN invite_code TEXT",
+            "ALTER TABLE users ADD COLUMN last_activity_at TIMESTAMP",
+            "ALTER TABLE purchases ADD COLUMN order_code TEXT"
+        ]:
+            try:
+                await db_execute(db, sql)
+            except Exception:
+                pass
         await db_commit(db)
     print(f"[DB] ready → {DATABASE_PATH} (aiosqlite={HAS_AIOSQLITE})")
 
@@ -382,18 +390,25 @@ async def find_owned_product(roblox_id:int):
     return None,None
 
 async def record_purchase(discord_id:int, roblox_id:int, product_key:str, product:dict):
+    order_code = generate_order_code()
     async with get_db() as db:
+        await db_execute(db, "INSERT OR IGNORE INTO users(discord_id, roblox_id, roblox_name, coins, purchases, total_spent_robux, joined_at, last_activity_at) VALUES(?,?,?,0,0,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+            (discord_id, roblox_id, ""))
         await db_execute(db,
-            "INSERT INTO purchases(discord_id,roblox_id,product_key,gamepass_id,robux_price,delivered,delivery_at) VALUES(?,?,?,?,?,1,CURRENT_TIMESTAMP)",
-            (discord_id,roblox_id,product_key,product.get("gamepass_id"),product.get("robux_price",0)))
+            "INSERT INTO purchases(discord_id,roblox_id,product_key,gamepass_id,robux_price,order_code,delivered,delivery_at) VALUES(?,?,?,?,?,?,1,CURRENT_TIMESTAMP)",
+            (discord_id,roblox_id,product_key,product.get("gamepass_id"),product.get("robux_price",0), order_code))
+        cur = await db_execute(db, "SELECT id FROM purchases WHERE discord_id=? AND order_code=? ORDER BY id DESC LIMIT 1", (discord_id, order_code))
+        prow = await cur.fetchone()
+        purchase_id = prow[0] if prow else None
         await db_execute(db,
-            "UPDATE users SET purchases=purchases+1, total_spent_robux=total_spent_robux+? WHERE discord_id=?",
+            "UPDATE users SET purchases=purchases+1, total_spent_robux=total_spent_robux+?, last_activity_at=CURRENT_TIMESTAMP WHERE discord_id=?",
             (product.get("robux_price",0), discord_id))
         today = datetime.date.today().isoformat()
         await db_execute(db,
             "INSERT INTO revenue_daily(day,robux,purchases,customers) VALUES(?,?,1,1) ON CONFLICT(day) DO UPDATE SET robux=robux+excluded.robux, purchases=purchases+1",
             (today, product.get("robux_price",0)))
         await db_commit(db)
+    return purchase_id, order_code
 
 async def add_coins(discord_id:int, amount:int, reason:str, meta:str=""):
     if amount==0: return
@@ -470,7 +485,7 @@ LOG_COLORS = {
     "ticker":0xFFD700, "bot":0x95a5a6, "owner":0x2c3e50,
 }
 async def send_log(bot_obj, log_type:str, embed:discord.Embed=None, content:str=None,
-                   discord_id:int=None, channel_id:int=None, meta:str=""):
+                   discord_id:int=None, channel_id:int=None, meta:str="", file=None):
     chan_id = L(log_type)
     if chan_id:
         ch = bot_obj.get_channel(chan_id)
@@ -482,7 +497,7 @@ async def send_log(bot_obj, log_type:str, embed:discord.Embed=None, content:str=
                 if embed:
                     if not embed.timestamp: embed.timestamp = datetime.datetime.utcnow()
                     if not embed.color: embed.color = LOG_COLORS.get(log_type,0x7d7d7d)
-                await ch.send(content=content, embed=embed)
+                await ch.send(content=content, embed=embed, file=file)
             except Exception as e:
                 print(f"[LOG {log_type}] {e}")
     try:
@@ -575,6 +590,21 @@ def parse_db_ts(value):
 
 def product_label(product_key:str)->str:
     return PRODUCTS.get(product_key, {}).get("name", str(product_key).replace("_", " ").title())
+
+def build_product_embed(product_key:str)->discord.Embed:
+    p = PRODUCTS.get(product_key, {})
+    title = p.get("name", product_label(product_key))
+    price = p.get("robux_price", "?")
+    files = p.get("deliver", {}).get("files", [])
+    desc = p.get("deliver", {}).get("message", "Premium Produkt aus dem Void Shop.")
+    e = discord.Embed(title=f"🛍️ {title}", description=desc, color=0xFF2020, timestamp=datetime.datetime.utcnow())
+    e.add_field(name="Preis", value=f"{price} Robux", inline=True)
+    e.add_field(name="Kauf", value="`!verify DeinRobloxName` → kaufen → `!checkbuy`", inline=True)
+    e.add_field(name="Lieferung", value="Sofort per DM / Auto-Delivery", inline=False)
+    if files:
+        e.add_field(name="Beispiel / Download", value="\n".join(f"• <{u}>" for u in files[:3]), inline=False)
+    e.set_footer(text="Void_Shop • Premium Produkte • Auto-Delivery")
+    return e
 
 def staff_role_ids()->set[int]:
     return {rid for rid in {
@@ -750,6 +780,68 @@ async def reward_invite_if_needed(inviter_id:int, invited_id:int, invite_code:st
     await add_coins(inviter_id, COIN_REWARDS["invite"], "invite_reward", f"invited:{invited_id}")
     return True
 
+async def touch_user_activity(discord_id:int):
+    if not discord_id:
+        return
+    try:
+        async with get_db() as db:
+            await db_execute(db, "INSERT OR IGNORE INTO users(discord_id, joined_at, last_activity_at) VALUES(?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (discord_id,))
+            await db_execute(db, "UPDATE users SET last_activity_at=CURRENT_TIMESTAMP WHERE discord_id=?", (discord_id,))
+            await db_commit(db)
+    except Exception as e:
+        print(f"[activity] {e}")
+
+async def get_invite_count(discord_id:int)->int:
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT COUNT(*) FROM invites WHERE inviter_id=? AND rewarded=1", (discord_id,))
+        row = await cur.fetchone()
+        return int(row[0] if row else 0)
+
+async def get_invite_leaderboard(limit:int=10):
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT inviter_id, COUNT(*) as total FROM invites WHERE rewarded=1 GROUP BY inviter_id ORDER BY total DESC LIMIT ?", (limit,))
+        return await cur.fetchall()
+
+async def get_customer_history(discord_id:int, limit:int=50):
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT product_key, robux_price, order_code, created_at FROM purchases WHERE discord_id=? AND delivered=1 ORDER BY created_at DESC LIMIT ?", (discord_id, limit))
+        return await cur.fetchall()
+
+def generate_order_code()->str:
+    return f"VS-{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M%S')}-{random.randint(100,999)}"
+
+def safe_filename(value:str)->str:
+    value = re.sub(r'[^A-Za-z0-9._-]+', '_', value or 'file')
+    return value[:80].strip('_') or 'file'
+
+async def save_ticket_transcript(channel:discord.TextChannel)->str|None:
+    lines = []
+    try:
+        async for msg in channel.history(limit=500, oldest_first=True):
+            stamp = msg.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            author = f"{msg.author} ({msg.author.id})"
+            body = msg.content or ''
+            if msg.attachments:
+                body += ('\n' if body else '') + 'Attachments: ' + ', '.join(a.url for a in msg.attachments)
+            if msg.embeds and not body:
+                body = '[Embed]'
+            lines.append(f"[{stamp}] {author}: {body}")
+    except Exception as e:
+        print(f"[transcript history] {e}")
+        return None
+    os.makedirs('transcripts', exist_ok=True)
+    path = os.path.join('transcripts', f"ticket_{channel.id}_{safe_filename(channel.name)}.txt")
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) or 'Leeres Ticket')
+        async with get_db() as db:
+            await db_execute(db, "INSERT OR REPLACE INTO ticket_transcripts(channel_id, file_path, created_at) VALUES(?,?,CURRENT_TIMESTAMP)", (channel.id, path))
+            await db_commit(db)
+        return path
+    except Exception as e:
+        print(f"[transcript save] {e}")
+        return None
+
 INVITE_CACHE = {}
 
 # =====================================================================
@@ -800,7 +892,15 @@ class TicketPanelView(discord.ui.View):
             color=0x1abc9c
         )
         emb.set_footer(text="Void_Shop Ticket System • Claim + Survey + Staff Tracking")
-        await ch.send(f"{interaction.user.mention}", embed=emb, view=TicketControlView())
+        ping_ids = []
+        if ttype == "partner":
+            ping_ids.extend([ROL("owner"), ROL("admin"), ROL("head_staff")])
+        elif ttype == "buy":
+            ping_ids.extend([ROL("staff"), ROL("head_staff"), ROL("admin")])
+        else:
+            ping_ids.extend([ROL("staff"), ROL("moderator"), ROL("head_staff")])
+        mentions = " ".join(role.mention for role in guild.roles if role.id in {pid for pid in ping_ids if pid})
+        await ch.send(f"{interaction.user.mention} {mentions}".strip(), embed=emb, view=TicketControlView())
         await interaction.followup.send(f"✅ Ticket erstellt: {ch.mention}", ephemeral=True)
         log_emb = make_embed("🎫 Ticket geöffnet", f"{interaction.user.mention} → {ch.mention}\nTyp: **{label}**", 0x1abc9c, interaction.user)
         await send_log(bot, "ticket", log_emb, discord_id=interaction.user.id, channel_id=ch.id, meta=f"type={ttype}")
@@ -1020,7 +1120,9 @@ async def close_ticket_final(channel:discord.TextChannel, feedback_user:discord.
         else:
             txt += "Kein Kauf"
         emb = make_embed("🎫 Ticket geschlossen", txt, 0x95a5a6, real_closer)
-        await send_log(bot, "ticket", emb, discord_id=real_closer.id, channel_id=channel.id, meta=f"purchased={purchased};product={product};stars={stars}")
+        transcript_path = await save_ticket_transcript(channel)
+        transcript_file = discord.File(transcript_path, filename=os.path.basename(transcript_path)) if transcript_path and os.path.isfile(transcript_path) else None
+        await send_log(bot, "ticket", emb, discord_id=real_closer.id, channel_id=channel.id, meta=f"purchased={purchased};product={product};stars={stars};transcript={transcript_path or ''}", file=transcript_file)
         if purchased and owner_id and L("ticker"):
             buyer = channel.guild.get_member(owner_id)
             if buyer:
@@ -1064,36 +1166,26 @@ class OneClickVerifyView(discord.ui.View):
         member_role_id = ROL("member") or ROL("verified")
         unverified_id = ROL("unverified")
         try:
-            if member_role_id:
-                mr = guild.get_role(member_role_id)
-                if mr: await user.add_roles(mr, reason="Discord Access Verify")
+            member_role = guild.get_role(member_role_id) if member_role_id else None
+            already_verified = bool(member_role and member_role in user.roles)
+            if member_role and member_role not in user.roles:
+                await user.add_roles(member_role, reason="Discord Access Verify")
             if unverified_id:
                 ur = guild.get_role(unverified_id)
                 if ur and ur in user.roles:
                     await user.remove_roles(ur, reason="Discord access granted")
-            await add_coins(user.id, COIN_REWARDS["verify"], "verify_oneclick")
+            if not already_verified:
+                await add_coins(user.id, COIN_REWARDS["verify"], "verify_oneclick")
+                coin_txt = f"+{COIN_REWARDS['verify']} Coins gutgeschrieben."
+            else:
+                coin_txt = "Du warst bereits freigeschaltet – keine doppelten Coins vergeben."
             await interaction.response.send_message(
-                f"✅ Server-Zugang freigeschaltet, {user.mention}!\n+{COIN_REWARDS['verify']} Coins gutgeschrieben.\n\n🔐 **Für Roblox-Käufe und 100 % Identitätsprüfung nutze zusätzlich:** `!verify DeinRobloxName`",
+                f"✅ Server-Zugang freigeschaltet, {user.mention}!\n{coin_txt}\n\n🔐 **Für Roblox-Käufe und 100 % Identitätsprüfung nutze zusätzlich:** `!verify DeinRobloxName`",
                 ephemeral=True
             )
             log_emb = make_embed("🔓 Discord-Zugang freigeschaltet", f"{user.mention} hat den Serverzugang per 1-Klick freigeschaltet.\nHinweis: Roblox-Shop-Verify bleibt `!verify Name`.", 0x2ecc71, user)
             await send_log(bot, "verify", log_emb, discord_id=user.id)
-            # welcome embed in welcome channel
-            wc_id = C("welcome")
-            if wc_id:
-                ch = guild.get_channel(wc_id)
-                if ch:
-                    w = discord.Embed(
-                        title=f"Willkommen {user.display_name}!",
-                        description=f"🎉 **Herzlich Willkommen bei Void Shop**, {user.mention}!\n\nSchön dass du da bist ❤️\n\n🛍️ Schau in <#{(C('products') or C('general') or ch.id)}> vorbei\n💬 Support: Ticket-System\n🪙 Sammle Void-Coins!\n🔐 Für Shop-Käufe: `!verify DeinRobloxName`\n\n**Viel Spaß!**",
-                        color=0x2ecc71, timestamp=datetime.datetime.utcnow()
-                    )
-                    try:
-                        w.set_thumbnail(url=user.display_avatar.url)
-                        w.set_footer(text=f"Mitglied #{guild.member_count} • Void_Shop", icon_url=guild.icon.url if guild.icon else None)
-                    except: pass
-                    try: await ch.send(content=user.mention, embed=w)
-                    except: pass
+            await touch_user_activity(user.id)
         except Exception as e:
             if interaction.response.is_done():
                 await interaction.followup.send(f"⚠️ Fehler: {e}", ephemeral=True)
@@ -1131,7 +1223,7 @@ class VerifyView(discord.ui.View):
                     if ur:
                         try: await interaction.user.remove_roles(ur, reason="Roblox verified")
                         except: pass
-                for rk in ["verified","member","customer"]:
+                for rk in ["verified","member"]:
                     rid = ROL(rk)
                     if rid:
                         r = guild.get_role(rid)
@@ -1140,6 +1232,7 @@ class VerifyView(discord.ui.View):
                             except: pass
         except: pass
         await add_coins(self.discord_id, COIN_REWARDS["verify"], "verify_bio")
+        await touch_user_activity(self.discord_id)
         emb = discord.Embed(title="✅ Verifiziert!",
             description=f"Willkommen **{self.roblox_name}**!\nRoblox ID: `{self.roblox_id}`\n\n+{COIN_REWARDS['verify']} Void-Coins gutgeschrieben!",
             color=0x2ecc71)
@@ -1232,6 +1325,7 @@ CHANNELS_SETUP = [
         ("🤖・bot-commands", "text", "Bot Befehle hier: !help !verify !checkbuy"),
         ("📸・media", "text", "Teile deine Screenshots / Designs"),
         ("🎮・roblox", "text", "Roblox Talk"),
+        ("🎁・invites", "text", "Invite-System, Leaderboard und Belohnungen"),
         ("💡・vorschläge", "text", "Vorschläge für den Shop"),
         ("🐛・bug-reports", "text", "Fehler melden"),
         ("🌍・international", "text", "English / International Chat"),
@@ -1274,51 +1368,44 @@ def reset_runtime_state():
     for key in list(RUNTIME.keys()):
         if key.startswith("log_") or key.startswith("role_") or key.startswith("stat_") or key in {
             "welcome", "goodbye", "rules", "announcements", "verify", "how_to_buy", "fastflags",
-            "products", "vouches", "media", "general", "bot_commands", "ticket_create", "ticker"
+            "sky", "tshirt_template", "anti_alt_ban", "products", "prices", "offers", "faq", "links",
+            "invites", "vouches", "media", "general", "bot_commands", "ticket_create", "ticker"
         }:
             RUNTIME[key] = 0
 
-async def wipe_managed_server(guild:discord.Guild, status_message=None):
+async def wipe_managed_server(guild:discord.Guild, status_message=None, keep_channel_id:int=0):
     deleted = {"roles":0, "channels":0, "categories":0}
-    managed_category_names = {name for name, _ in CHANNELS_SETUP} | {"📊 LOGS", "📊 STATS"}
-    managed_channel_names = {name for _, channels in CHANNELS_SETUP for name, _, _ in channels}
-    managed_channel_names.update({name for name, _ in LOG_CHANNEL_DEFS})
-    managed_role_names = {name for name, *_ in ROLE_DEFS}
-    runtime_ids = {value for value in RUNTIME.values() if isinstance(value, int) and value}
     if status_message:
         try:
-            await status_message.edit(content="♻️ **Reset-Modus aktiv** – lösche vorhandene VOID-Struktur …")
+            await status_message.edit(content="♻️ **Reset-Modus aktiv** – lösche Kanäle, Kategorien und Rollen für einen sauberen Neuaufbau …")
         except Exception:
             pass
-    channels = sorted(list(guild.channels), key=lambda c: getattr(c, "position", 0), reverse=True)
+    channels = sorted(list(guild.channels), key=lambda c: (getattr(c, "category_id", 0) or 0, getattr(c, "position", 0)), reverse=True)
     for ch in channels:
-        cat_name = ch.category.name if getattr(ch, "category", None) else ""
-        should_delete = ch.id in runtime_ids or ch.name in managed_channel_names or cat_name in {"📊 LOGS", "📊 STATS"}
-        if should_delete:
-            try:
-                await ch.delete(reason="Void_Shop Komplett neu aufsetzen")
-                deleted["channels"] += 1
-                await asyncio.sleep(0.35)
-            except Exception as e:
-                print(f"[RESET channel] {ch} {e}")
-    for cat in list(guild.categories):
-        if cat.name in managed_category_names:
-            try:
-                await cat.delete(reason="Void_Shop Komplett neu aufsetzen")
-                deleted["categories"] += 1
-                await asyncio.sleep(0.35)
-            except Exception as e:
-                print(f"[RESET category] {cat} {e}")
+        if keep_channel_id and ch.id == keep_channel_id:
+            continue
+        try:
+            await ch.delete(reason="Void_Shop Komplett neu aufsetzen")
+            deleted["channels"] += 1
+            await asyncio.sleep(0.25)
+        except Exception as e:
+            print(f"[RESET channel] {ch} {e}")
+    for cat in sorted(list(guild.categories), key=lambda c: getattr(c, "position", 0), reverse=True):
+        try:
+            await cat.delete(reason="Void_Shop Komplett neu aufsetzen")
+            deleted["categories"] += 1
+            await asyncio.sleep(0.25)
+        except Exception as e:
+            print(f"[RESET category] {cat} {e}")
     for role in sorted(list(guild.roles), key=lambda r: r.position, reverse=True):
         if role.is_default() or role.managed:
             continue
-        if role.name in managed_role_names:
-            try:
-                await role.delete(reason="Void_Shop Komplett neu aufsetzen")
-                deleted["roles"] += 1
-                await asyncio.sleep(0.35)
-            except Exception as e:
-                print(f"[RESET role] {role} {e}")
+        try:
+            await role.delete(reason="Void_Shop Komplett neu aufsetzen")
+            deleted["roles"] += 1
+            await asyncio.sleep(0.25)
+        except Exception as e:
+            print(f"[RESET role] {role} {e}")
     reset_runtime_state()
     save_runtime()
     return deleted
@@ -1327,7 +1414,7 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
     created = {"roles":0,"channels":0,"categories":0}
     deleted = {"roles":0,"channels":0,"categories":0}
     if mode == "reset":
-        deleted = await wipe_managed_server(guild, status_message)
+        deleted = await wipe_managed_server(guild, status_message, keep_channel_id=status_message.channel.id)
     await status_message.edit(content="🚀 **1/7 Rollen erstellen / prüfen …**")
     existing_roles = {r.name:r for r in guild.roles}
     for name,rgb,hoist,mentionable in reversed(ROLE_DEFS):
@@ -1392,7 +1479,15 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
             if n.startswith("✅") and "verify" in n: RUNTIME["verify"] = ch.id
             if "how-to-buy" in n: RUNTIME["how_to_buy"] = ch.id
             if "fastflags" in n and ch.type == discord.ChannelType.text and not RUNTIME.get("fastflags"): RUNTIME["fastflags"] = ch.id
+            if "・sky" in ch_name.lower(): RUNTIME["sky"] = ch.id
+            if "tshirt-template" in n: RUNTIME["tshirt_template"] = ch.id
+            if "anti-alt-ban" in n: RUNTIME["anti_alt_ban"] = ch.id
             if "produkte" in n: RUNTIME["products"] = ch.id
+            if "preise" in n: RUNTIME["prices"] = ch.id
+            if "angebote" in n: RUNTIME["offers"] = ch.id
+            if "faq" in n: RUNTIME["faq"] = ch.id
+            if "links" in n: RUNTIME["links"] = ch.id
+            if "invites" in n: RUNTIME["invites"] = ch.id
             if "vouches" in n: RUNTIME["vouches"] = ch.id
             if "bot-commands" in n: RUNTIME["bot_commands"] = ch.id
             if "ticket-erstellen" in n: RUNTIME["ticket_create"] = ch.id
@@ -1460,9 +1555,11 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
             except Exception:
                 return
         try:
-            async for m in ch.history(limit=8):
+            async for m in ch.history(limit=25):
                 if m.author.id == bot.user.id and m.embeds:
-                    return
+                    first = m.embeds[0]
+                    if first.title == embed.title:
+                        return
         except Exception:
             pass
         try:
@@ -1548,6 +1645,26 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
         ), color=0xFFD700)
         await post_panel(C("how_to_buy"), emb)
 
+    if C("products"):
+        overview = discord.Embed(
+            title="🛍️ VOID SHOP – Produktübersicht",
+            description=(
+                "Hier findest du alle Hauptprodukte von Void Shop.\n\n"
+                "• ⚡ FastFlags\n"
+                "• ☁️ Sky\n"
+                "• 👕 T-Shirt Template\n"
+                "• 🛡️ Anti Alt Ban\n\n"
+                "**Ablauf:** `!verify DeinRobloxName` → kaufen → `!checkbuy` → Auto-Delivery"
+            ),
+            color=0xFF2020
+        )
+        overview.set_footer(text="Void_Shop • Produkte • Premium Design")
+        await post_panel(C("products"), overview)
+        await post_panel(C("products"), build_product_embed("fastflags_premium"))
+        await post_panel(C("products"), build_product_embed("sky"))
+        await post_panel(C("products"), build_product_embed("tshirt_template"))
+        await post_panel(C("products"), build_product_embed("anti_alt_ban"))
+
     ffid = C("fastflags")
     if ffid:
         emb = discord.Embed(title="⚡ FastFlags – Info", description=(
@@ -1556,13 +1673,60 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
             "**Pakete:**\n"
             "• **Premium FastFlags** – 250 R$\n"
             "• **FastFlags Ultra** – 499 R$\n"
-            "• **Starter Bundle** – 75 R$\n"
-            "• **Sky** – 180 R$\n"
-            "• **T-Shirt Template** – 120 R$\n"
-            "• **Anti Alt Ban** – 399 R$\n\n"
+            "• **Starter Bundle** – 75 R$\n\n"
             "`!verify` → kaufen → `!checkbuy` → Auto-Delivery <5s"
         ), color=0xff8800)
         await post_panel(ffid, emb)
+        await post_panel(ffid, build_product_embed("fastflags_premium"))
+        await post_panel(ffid, build_product_embed("fastflags_ultra"))
+
+    if C("sky"):
+        await post_panel(C("sky"), build_product_embed("sky"))
+    if C("tshirt_template"):
+        await post_panel(C("tshirt_template"), build_product_embed("tshirt_template"))
+    if C("anti_alt_ban"):
+        await post_panel(C("anti_alt_ban"), build_product_embed("anti_alt_ban"))
+    if C("prices"):
+        price = discord.Embed(title="💰 Preisübersicht", description=(
+            "• Premium FastFlags — **250 R$**\n"
+            "• Sky — **180 R$**\n"
+            "• T-Shirt Template — **120 R$**\n"
+            "• Anti Alt Ban — **399 R$**\n"
+            "• FastFlags Ultra — **499 R$**\n"
+            "• Starter Bundle — **75 R$**"
+        ), color=0xFFD700)
+        await post_panel(C("prices"), price)
+    if C("offers"):
+        offers = discord.Embed(title="🎁 Angebote & Bundles", description=(
+            "**Aktuelle Ideen / Specials:**\n"
+            "• Starter Bundle für neue Kunden\n"
+            "• FastFlags + Sky Bundle\n"
+            "• VIP Kunden erhalten bessere Deals\n\n"
+            "Frage im Ticket nach Sonderaktionen oder Bundle-Preisen."
+        ), color=0x9b59b6)
+        await post_panel(C("offers"), offers)
+    if C("faq"):
+        faq = discord.Embed(title="❓ FAQ", description=(
+            "**Wie kaufe ich?** → `!verify` → kaufen → `!checkbuy`\n"
+            "**Wie erhalte ich mein Produkt?** → automatisch per DM\n"
+            "**Ich habe keine DM bekommen?** → Ticket öffnen\n"
+            "**Wie bekomme ich Coins?** → Verify, Invites, Käufe, Vouches, Daily"
+        ), color=0x3498db)
+        await post_panel(C("faq"), faq)
+    if C("links"):
+        links = discord.Embed(title="🔗 Wichtige Links", description=(
+            "• Roblox Profil / Gamepass Links → auf Anfrage im Ticket\n"
+            "• Support → Ticket-System\n"
+            "• Bot Hilfe → `!help` im Bot-Commands Kanal"
+        ), color=0x5865F2)
+        await post_panel(C("links"), links)
+    if C("invites"):
+        inv = discord.Embed(title="🎁 Invite-System", description=(
+            f"Lade Freunde ein und erhalte **+{COIN_REWARDS['invite']} Void-Coins** pro erfolgreichem Join.\n\n"
+            "Nutze `!invites` um deine aktuellen Invites zu sehen.\n"
+            "Top-Inviter werden im Dashboard und per Command sichtbar."
+        ), color=0xFFD700)
+        await post_panel(C("invites"), inv)
 
     if C("ticket_create"):
         emb = discord.Embed(title="🎫 Void_Shop Support – Ticket erstellen", description=(
@@ -1619,10 +1783,8 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
         color=0x2ecc71
     )
     emb_done.set_footer(text="Void_Shop v2.0 ULTIMATE • RealVexo696")
-    if guild.system_channel:
-        await guild.system_channel.send(embed=emb_done)
-    else:
-        await status_message.channel.send(embed=emb_done)
+    target_channel = guild.system_channel or guild.get_channel(C("bot_commands")) or status_message.channel
+    await target_channel.send(embed=emb_done)
     try:
         log_emb = make_embed(
             "👑 Server Setup abgeschlossen",
@@ -1635,7 +1797,10 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
     except Exception:
         pass
     try:
-        await status_message.delete()
+        if mode == "reset" and status_message.channel.id != target_channel.id:
+            await status_message.channel.delete(reason="Void_Shop Reset – alte Start-Channel-Struktur entfernt")
+        else:
+            await status_message.delete()
     except Exception:
         pass
 
@@ -1793,7 +1958,8 @@ async def on_member_join(member):
     reward_text = ""
     try:
         async with get_db() as db:
-            await db_execute(db, "INSERT OR IGNORE INTO users(discord_id, joined_at) VALUES(?, CURRENT_TIMESTAMP)", (member.id,))
+            await db_execute(db, "INSERT OR IGNORE INTO users(discord_id, joined_at, last_activity_at) VALUES(?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (member.id,))
+            await db_execute(db, "UPDATE users SET last_activity_at=CURRENT_TIMESTAMP WHERE discord_id=?", (member.id,))
             await db_commit(db)
     except Exception:
         pass
@@ -1815,6 +1981,13 @@ async def on_member_join(member):
                 await send_log(bot, "coins", coin_emb, discord_id=used_invite.inviter.id)
             invite_emb = make_embed("🔗 Mitglied per Invite beigetreten", f"Neues Mitglied: {member.mention}\nEinladender: {used_invite.inviter.mention}\nCode: `{used_invite.code}`{reward_text}", 0x5865F2, member)
             await send_log(bot, "invite", invite_emb, discord_id=member.id)
+            invite_channel = member.guild.get_channel(C("invites")) if C("invites") else None
+            if invite_channel:
+                total_invites = await get_invite_count(used_invite.inviter.id)
+                try:
+                    await invite_channel.send(embed=make_embed("🎁 Neuer Invite registriert", f"{used_invite.inviter.mention} hat jetzt **{total_invites}** erfolgreiche Invites.\nNeuer Join: {member.mention}", 0xFFD700, used_invite.inviter))
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[invite reward] {e}")
     wc_id = C("welcome")
@@ -1933,6 +2106,7 @@ async def on_message(message):
     if message.author.bot:
         await bot.process_commands(message)
         return
+    await touch_user_activity(message.author.id)
     if message.guild:
         if message.channel.name.startswith("ticket-") and is_staff_member(message.author):
             try:
@@ -2068,13 +2242,13 @@ async def on_guild_channel_update(before, after):
 @bot.command(name="help")
 async def help_cmd(ctx):
     e = discord.Embed(title="🛍️ Void_Shop v2 ULTIMATE – Befehle", color=0xFF2020)
-    e.add_field(name="👑 Setup", value="`!start` – öffnet den Setup-Assistenten mit 3 Auswahlmöglichkeiten", inline=False)
-    e.add_field(name="🔐 Verify", value="`!verify Name` – Bulletproof Roblox Bio-Code-Auth\nDiscord-Zugang im <#{}>".format(C("verify") or 0), inline=False)
-    e.add_field(name="🛍️ Shop", value="`!checkbuy` – Auto-Delivery\n`!products`", inline=False)
-    e.add_field(name="🪙 Coins", value="`!coins` `!shop` `!redeem <150|300|500|800>` `!daily` `!coinlb`", inline=False)
-    e.add_field(name="🎫 Tickets", value="Erstellen im Ticket-Panel\nClaim + Survey + Staff-Tracking", inline=False)
-    e.add_field(name="👑 Owner", value="Revenue / Staff / Logs / Tickets primär im Dashboard sichtbar", inline=False)
-    e.set_footer(text=f"Void_Shop v2.0 ULTIMATE • Web: http://localhost:{DASHBOARD_PORT}")
+    e.add_field(name="👑 Setup", value="`!start` – Setup-Assistent mit **Abbruch / Nur Hinzufügen / Komplett neu aufsetzen**", inline=False)
+    e.add_field(name="🔐 Verify", value="`!verify <RobloxName>` – sichere Bio-Code-Auth\nDiscord-Zugang im <#{}>".format(C("verify") or 0), inline=False)
+    e.add_field(name="🛍️ Shop", value="`!products` – Produkte anzeigen\n`!checkbuy` – Kauf prüfen + Auto-Delivery\n`!history [@user]` – Bestellhistorie", inline=False)
+    e.add_field(name="🪙 Coins & Invites", value="`!coins` `!shop` `!redeem <150|300|500|800>` `!daily` `!coinlb` `!invites [@user]`", inline=False)
+    e.add_field(name="🎫 Tickets", value="Ticket-Panel mit **Produkt kaufen / Support / Partnerschaft**\nClaim + Survey + Staff-Tracking", inline=False)
+    e.add_field(name="👑 Owner / Management", value="`!revenue` `!stafflb` `!ticker`\nZusätzlich CRM / Tickets / Logs / Umsatz im Dashboard", inline=False)
+    e.set_footer(text=f"Void_Shop v2.0 ULTIMATE • Dashboard-Port: {DASHBOARD_PORT}")
     await ctx.send(embed=e)
 
 @bot.command(name="verify")
@@ -2103,6 +2277,7 @@ async def verify_cmd(ctx, *, roblox_name:str=None):
         await ctx.send(f"{ctx.author.mention} 📩 Check deine DMs!", delete_after=20)
     except discord.Forbidden:
         await ctx.send(embed=emb, view=view, delete_after=300)
+    await touch_user_activity(ctx.author.id)
     log_emb = make_embed("🔐 Verify gestartet",
         f"{ctx.author.mention} → **{roblox_name}** (`{roblox_id}`)\nCode: `{code}`",0x9b59b6,ctx.author)
     await send_log(bot,"verify",log_emb,discord_id=ctx.author.id)
@@ -2124,7 +2299,7 @@ async def checkbuy_cmd(ctx):
             f"{ctx.author.mention} • {roblox_name} (`{roblox_id}`)",0xe67e22,ctx.author)
         await send_log(bot,"shop",log_emb,discord_id=ctx.author.id)
         return
-    await record_purchase(ctx.author.id, roblox_id, product_key, product)
+    purchase_id, order_code = await record_purchase(ctx.author.id, roblox_id, product_key, product)
     await msg.edit(content=f"✅ Kauf erkannt: **{product['name']}** – bereite Auto-Delivery vor …")
     deliver = product.get("deliver",{})
     embed = discord.Embed(
@@ -2133,10 +2308,13 @@ async def checkbuy_cmd(ctx):
         color=0x00ff88)
     embed.add_field(name="Produkt", value=product["name"], inline=True)
     embed.add_field(name="Preis", value=f"{product.get('robux_price','?')} Robux", inline=True)
+    embed.add_field(name="Bestell-ID", value=order_code, inline=True)
     embed.add_field(name="Lieferung", value="< 5 Sekunden • Auto-Delivery", inline=False)
+    embed.add_field(name="Beleg", value=f"Käufer: {ctx.author.mention}\nZeit: <t:{int(datetime.datetime.utcnow().timestamp())}:F>", inline=False)
     files = deliver.get("files",[])
     if files:
         embed.add_field(name="Download Links", value="\n".join(f"• <{u}>" for u in files), inline=False)
+    embed.add_field(name="Bonus", value=f"Hinterlasse ein 5⭐ Vouch in <#{C('vouches') or ctx.channel.id}> und erhalte +{COIN_REWARDS['vouch_5star']} Coins.", inline=False)
     embed.set_footer(text="Void_Shop • Auto-Delivery • danke ❤️")
     dm_ok=True
     dm_message = None
@@ -2148,9 +2326,6 @@ async def checkbuy_cmd(ctx):
         await ctx.send(f"⚠️ Konnte keine DM senden! Öffne deine DMs.\n\n**Manuell:**\n"+"\n".join(files), delete_after=60)
     try:
         async with get_db() as db:
-            cur = await db_execute(db, "SELECT id FROM purchases WHERE discord_id=? AND product_key=? ORDER BY id DESC LIMIT 1", (ctx.author.id, product_key))
-            prow = await cur.fetchone()
-            purchase_id = prow[0] if prow else None
             await db_execute(db, "INSERT INTO deliveries(purchase_id, discord_id, product_key, dm_message_id, success) VALUES(?,?,?,?,?)", (purchase_id, ctx.author.id, product_key, str(getattr(dm_message, 'id', '')), 1 if dm_ok else 0))
             await db_commit(db)
     except Exception as e:
@@ -2171,7 +2346,13 @@ async def checkbuy_cmd(ctx):
     except: pass
     coins_reward = product.get("coins_reward", COIN_REWARDS["purchase"])
     await add_coins(ctx.author.id, coins_reward, "purchase", product_key)
-    await msg.edit(content=f"🎉 **{product['name']}** erfolgreich geliefert! Check deine DMs {ctx.author.mention}\n+{coins_reward} Void-Coins!")
+    await touch_user_activity(ctx.author.id)
+    upsell = ""
+    if product_key in {"fastflags_premium", "fastflags_ultra"}:
+        upsell = "\n💡 Bonus-Idee: Wenn dir FastFlags gefällt, schau dir auch **Sky** an."
+    elif product_key == "sky":
+        upsell = "\n💡 Bonus-Idee: Viele Sky-Käufer holen sich danach auch **FastFlags**."
+    await msg.edit(content=f"🎉 **{product['name']}** erfolgreich geliefert! Check deine DMs {ctx.author.mention}\nBestell-ID: `{order_code}`\n+{coins_reward} Void-Coins!{upsell}")
     try:
         await update_stats_channels(ctx.guild)
     except Exception:
@@ -2181,7 +2362,7 @@ async def checkbuy_cmd(ctx):
     if tc:
         await send_purchase_ticker(bot, tc, ctx.author, product["name"], product.get("robux_price",0))
     log_emb = make_embed("✅ Auto-Delivery Erfolg",
-        f"{ctx.author.mention} → **{product['name']}**\n{product.get('robux_price')} Robux • DM {'OK' if dm_ok else 'FAIL'}\nRoblox: {roblox_name} (`{roblox_id}`)",
+        f"{ctx.author.mention} → **{product['name']}**\nBestell-ID: `{order_code}`\n{product.get('robux_price')} Robux • DM {'OK' if dm_ok else 'FAIL'}\nRoblox: {roblox_name} (`{roblox_id}`)",
         0x2ecc71, ctx.author)
     await send_log(bot,"shop",log_emb,discord_id=ctx.author.id)
 
@@ -2193,11 +2374,46 @@ async def products_cmd(ctx):
                       value=f"Gamepass: `{p['gamepass_id']}`\n`!checkbuy` nach Kauf", inline=False)
     await ctx.send(embed=emb)
 
+@bot.command(name="history", aliases=["orders"])
+async def history_cmd(ctx, member: discord.Member=None):
+    target = member or ctx.author
+    if member and member != ctx.author and not ctx.author.guild_permissions.manage_guild:
+        return await ctx.send("❌ Du kannst nur deine eigene Bestellhistorie sehen.")
+    rows = await get_customer_history(target.id, 15)
+    desc = ""
+    for row in rows:
+        try:
+            product_key, price, order_code, created_at = row[0], row[1], row[2], row[3]
+        except Exception:
+            product_key, price, order_code, created_at = row["product_key"], row["robux_price"], row["order_code"], row["created_at"]
+        desc += f"• **{product_label(product_key)}** — {price} R$ — `{order_code or 'ohne-id'}` — {created_at}\n"
+    emb = discord.Embed(title="🧾 Bestellhistorie", description=desc or "Noch keine Bestellungen gefunden.", color=0x00ff88)
+    emb.set_footer(text=f"Kunde: {target}")
+    await ctx.send(embed=emb)
+
 @bot.command(name="coins")
 async def coins_cmd(ctx, member: discord.Member=None):
     target = member or ctx.author
     bal = await get_coins(target.id)
     emb = discord.Embed(title="🪙 Void-Coins", description=f"{target.mention} hat **{bal} Coins**", color=0xFFD700)
+    await ctx.send(embed=emb)
+
+@bot.command(name="invites")
+async def invites_cmd(ctx, member: discord.Member=None):
+    target = member or ctx.author
+    total = await get_invite_count(target.id)
+    rows = await get_invite_leaderboard(10)
+    desc = f"{target.mention} hat aktuell **{total} erfolgreiche Invites**.\n\n"
+    if rows:
+        desc += "**Top Inviter:**\n"
+        for i, row in enumerate(rows, 1):
+            try:
+                inviter_id, count = row[0], row[1]
+            except Exception:
+                inviter_id, count = row["inviter_id"], row["total"]
+            desc += f"**#{i}** <@{inviter_id}> — {count} Invites\n"
+    emb = discord.Embed(title="🎁 Invite-System", description=desc, color=0xFFD700)
+    emb.set_footer(text="Jeder erfolgreiche Invite bringt Void-Coins")
     await ctx.send(embed=emb)
 
 @bot.command(name="shop")
@@ -2332,7 +2548,7 @@ th{color:var(--muted)}
 input,textarea{width:100%;padding:10px;background:#0f0f18;border:1px solid #2a2a40;color:#eee;border-radius:10px}
 </style></head><body>
 <div class=nav><b>🛍️ VOID_SHOP v2</b>
-<a href="/">Dashboard</a><a href="/products">Produkte</a><a href="/coins">Coins</a><a href="/tickets">Tickets</a><a href="/logs">Logs</a><a href="/staff">Staff</a>
+<a href="/">Dashboard</a><a href="/crm">CRM</a><a href="/products">Produkte</a><a href="/coins">Coins</a><a href="/invites">Invites</a><a href="/tickets">Tickets</a><a href="/logs">Logs</a><a href="/staff">Staff</a>
 <span style="flex:1"></span><a href="/logout">Logout</a></div>
 <div class=wrap>{{ content|safe }}
 <div class=footer>Void_Shop v2.0 ULTIMATE • RealVexo696 • Companion to VOID-TOOLS v2.6 • aiosqlite={{aiosqlite}}</div>
@@ -2342,6 +2558,12 @@ input,textarea{width:100%;padding:10px;background:#0f0f18;border:1px solid #2a2a
         con = sqlite3.connect(DATABASE_PATH); con.row_factory=sqlite3.Row
         cur = con.execute(sql, args); rv = cur.fetchall(); con.close()
         return (rv[0] if rv else None) if one else rv
+    @app.route("/health")
+    def health():
+        return {"ok": True, "dashboard": True, "port": DASHBOARD_PORT}
+    @app.route("/status")
+    def status_page():
+        return "VOID_SHOP Dashboard ist online. Nutze /login für das Owner-Panel."
     @app.route("/login", methods=["GET","POST"])
     def login():
         if request.method=="POST":
@@ -2360,7 +2582,7 @@ button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border
 {err}
 <form method=post><input type=password name=code placeholder="Owner Code" autofocus>
 <button>Einloggen</button></form>
-<small style="color:#666">Aktueller Login-Code: <b>{DASHBOARD_LOGIN_CODE}</b></small></div>"""
+<small style="color:#666">Login-Code wird über <code>DASHBOARD_LOGIN</code> in deiner .env gesetzt.</small></div>"""
     @app.route("/logout")
     def logout(): session.clear(); return redirect("/login")
     def owner_required(f):
@@ -2399,8 +2621,8 @@ button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border
  <div class=card><h3>AntiScam</h3><div class="big green">🛡️ aktiv</div>24/7 Schutz</div>
 </div>
 <div class=grid style="margin-top:16px">
- <div class=card><h3>👑 Owner-Zentrale</h3><div style="display:grid;gap:10px"><a class=btn href="/staff">Supporter-Leaderboard</a><a class=btn href="/tickets">Ticket-Control-Center</a><a class=btn href="/logs">LogSystem 2.0</a><a class=btn href="/coins">Void-Coins</a></div></div>
- <div class=card><h3>🧩 Aktivierte Features</h3><p>✅ Auto-Delivery<br>✅ Bulletproof Bio-Code-Verify<br>✅ AntiScam / Phishing-Schild<br>✅ Live-Käufe Ticker<br>✅ Invite-Rewards & Void-Coins<br>✅ Staff-Tracking & Ratings</p></div>
+ <div class=card><h3>👑 Owner-Zentrale</h3><div style="display:grid;gap:10px"><a class=btn href="/crm">CRM / Kundenprofile</a><a class=btn href="/staff">Supporter-Leaderboard</a><a class=btn href="/tickets">Ticket-Control-Center</a><a class=btn href="/logs">LogSystem 2.0</a><a class=btn href="/coins">Void-Coins</a><a class=btn href="/invites">Invite-Center</a></div></div>
+ <div class=card><h3>🧩 Aktivierte Features</h3><p>✅ Auto-Delivery<br>✅ Bulletproof Bio-Code-Verify<br>✅ AntiScam / Phishing-Schild<br>✅ Live-Käufe Ticker<br>✅ Invite-Rewards & Void-Coins<br>✅ Staff-Tracking & Ratings<br>✅ CRM / Bestellhistorie / Transkripte</p></div>
 </div>
 <div class=two style="margin-top:16px">
  <div class=card><h3>📈 Top Produkte</h3><table><tr><th>Produkt</th><th>Verkäufe</th><th>Umsatz</th></tr>"""
@@ -2429,6 +2651,48 @@ button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border
             html += f"<tr><td>{s['created_at']}</td><td>&lt;@{s['discord_id']}&gt;</td><td style='max-width:340px;overflow:hidden;text-overflow:ellipsis'>{s['url']}</td><td><span class=badge>{s['reason']}</span></td></tr>"
         if not scams: html += "<tr><td colspan=4 style=color:#666>Keine Scam-Versuche – Schild hält! 🛡️</td></tr>"
         html += "</table></div>"
+        return page(html)
+    @app.route("/crm")
+    @owner_required
+    def crm_page():
+        rows = q("""
+            SELECT u.discord_id, u.roblox_name, u.coins, u.purchases, u.total_spent_robux, u.joined_at, u.verified_at, u.last_activity_at,
+                   (SELECT COUNT(*) FROM tickets_open t WHERE t.user_id=u.discord_id AND t.closed=0) AS open_tickets
+            FROM users u
+            ORDER BY u.total_spent_robux DESC, u.purchases DESC, u.coins DESC
+            LIMIT 200
+        """)
+        html = "<h2>👑 CRM / Kundenverwaltung</h2><div class=card><table><tr><th>User</th><th>Roblox</th><th>Käufe</th><th>R$</th><th>Coins</th><th>Offene Tickets</th><th>Letzte Aktivität</th><th>Profil</th></tr>"
+        for r in rows:
+            html += f"<tr><td>&lt;@{r['discord_id']}&gt;</td><td>{r['roblox_name'] or '–'}</td><td>{r['purchases']}</td><td>{r['total_spent_robux']}</td><td class=gold>{r['coins']}</td><td>{r['open_tickets']}</td><td>{r['last_activity_at'] or r['joined_at'] or '–'}</td><td><a href='/crm/{r['discord_id']}'>Öffnen</a></td></tr>"
+        if not rows:
+            html += "<tr><td colspan=8 style=color:#666>Noch keine Kundendaten vorhanden.</td></tr>"
+        html += "</table></div>"
+        return page(html)
+    @app.route("/crm/<int:discord_id>")
+    @owner_required
+    def crm_detail_page(discord_id:int):
+        user = q("SELECT * FROM users WHERE discord_id=?", (discord_id,), one=True)
+        if not user:
+            return page("<div class=card><h2>Kunde nicht gefunden</h2></div>")
+        orders = q("SELECT product_key, robux_price, order_code, created_at FROM purchases WHERE discord_id=? ORDER BY created_at DESC LIMIT 100", (discord_id,))
+        tickets = q("SELECT channel_id, type, created_at, closed FROM tickets_open WHERE user_id=? ORDER BY created_at DESC LIMIT 50", (discord_id,))
+        html = f"<h2>🧾 Kundenprofil – &lt;@{discord_id}&gt;</h2><div class=grid>"
+        html += f"<div class=card><h3>Roblox</h3><div class=big>{user['roblox_name'] or '–'}</div></div>"
+        html += f"<div class=card><h3>Käufe</h3><div class=big>{user['purchases']}</div></div>"
+        html += f"<div class=card><h3>Gesamtumsatz</h3><div class='big gold'>{user['total_spent_robux']} R$</div></div>"
+        html += f"<div class=card><h3>Coins</h3><div class='big gold'>{user['coins']}</div></div></div>"
+        html += "<div class=two style='margin-top:16px'><div class=card><h3>Bestellhistorie</h3><table><tr><th>Zeit</th><th>Produkt</th><th>R$</th><th>Order-ID</th></tr>"
+        for o in orders:
+            html += f"<tr><td>{o['created_at']}</td><td>{o['product_key']}</td><td>{o['robux_price']}</td><td>{o['order_code'] or '–'}</td></tr>"
+        if not orders:
+            html += "<tr><td colspan=4 style=color:#666>Keine Bestellungen vorhanden.</td></tr>"
+        html += "</table></div><div class=card><h3>Ticket-Historie</h3><table><tr><th>Zeit</th><th>Typ</th><th>Status</th></tr>"
+        for t in tickets:
+            html += f"<tr><td>{t['created_at']}</td><td>{t['type']}</td><td>{'offen' if not t['closed'] else 'geschlossen'}</td></tr>"
+        if not tickets:
+            html += "<tr><td colspan=3 style=color:#666>Keine Tickets vorhanden.</td></tr>"
+        html += "</table></div></div>"
         return page(html)
     @app.route("/products")
     @owner_required
@@ -2475,27 +2739,47 @@ button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border
             html += f"<tr><td>{r['created_at']}</td><td><span class=badge>{r['log_type']}</span></td><td>{uid}</td><td>{ch}</td><td>{cont}</td></tr>"
         html += "</table></div>"
         return page(html)
+    @app.route("/invites")
+    @owner_required
+    def invites_page():
+        rows = q("SELECT inviter_id, COUNT(*) as total FROM invites WHERE rewarded=1 GROUP BY inviter_id ORDER BY total DESC LIMIT 200")
+        recent = q("SELECT inviter_id, invited_id, invite_code, joined_at FROM invites ORDER BY joined_at DESC LIMIT 100")
+        html = "<h2>🎁 Invite Center</h2><div class=two><div class=card><h3>Leaderboard</h3><table><tr><th>#</th><th>User</th><th>Invites</th></tr>"
+        for i, r in enumerate(rows, 1):
+            html += f"<tr><td>{i}</td><td>&lt;@{r['inviter_id']}&gt;</td><td>{r['total']}</td></tr>"
+        if not rows:
+            html += "<tr><td colspan=3 style=color:#666>Noch keine Invite-Daten.</td></tr>"
+        html += "</table></div><div class=card><h3>Letzte Invite-Joins</h3><table><tr><th>Zeit</th><th>Inviter</th><th>Neuer User</th><th>Code</th></tr>"
+        for r in recent:
+            html += f"<tr><td>{r['joined_at']}</td><td>&lt;@{r['inviter_id']}&gt;</td><td>&lt;@{r['invited_id']}&gt;</td><td>{r['invite_code'] or '–'}</td></tr>"
+        if not recent:
+            html += "<tr><td colspan=4 style=color:#666>Noch keine Invite-Logs vorhanden.</td></tr>"
+        html += "</table></div></div>"
+        return page(html)
     @app.route("/tickets")
     @owner_required
     def tickets_page():
         rows = q("""
             SELECT t.channel_id, t.user_id, t.type, t.created_at, t.closed,
-                   m.claimed_by, m.claimed_at, m.first_staff_response_at, m.closer_id, m.closed_at, m.survey_product, m.survey_stars
+                   m.claimed_by, m.claimed_at, m.first_staff_response_at, m.closer_id, m.closed_at, m.survey_product, m.survey_stars,
+                   tt.file_path
             FROM tickets_open t
             LEFT JOIN ticket_metrics m ON m.channel_id=t.channel_id
+            LEFT JOIN ticket_transcripts tt ON tt.channel_id=t.channel_id
             ORDER BY t.closed ASC, t.created_at DESC
             LIMIT 200
         """)
-        html = "<h2>🎫 Ticket Control Center</h2><div class=card><table><tr><th>Status</th><th>User</th><th>Typ</th><th>Claimed By</th><th>First Response</th><th>Produkt</th><th>⭐</th><th>Erstellt</th></tr>"
+        html = "<h2>🎫 Ticket Control Center</h2><div class=card><table><tr><th>Status</th><th>User</th><th>Typ</th><th>Claimed By</th><th>First Response</th><th>Produkt</th><th>⭐</th><th>Transcript</th><th>Erstellt</th></tr>"
         for r in rows:
             status = "🟢 Offen" if not r["closed"] else "⚫ Geschlossen"
             claimed = f"&lt;@{r['claimed_by']}&gt;" if r["claimed_by"] else "–"
             first_response = r["first_staff_response_at"] or "–"
             product = r["survey_product"] or "–"
             stars = r["survey_stars"] or "–"
-            html += f"<tr><td>{status}</td><td>&lt;@{r['user_id']}&gt;</td><td>{r['type']}</td><td>{claimed}</td><td>{first_response}</td><td>{product}</td><td>{stars}</td><td>{r['created_at']}</td></tr>"
+            transcript = r["file_path"] or "–"
+            html += f"<tr><td>{status}</td><td>&lt;@{r['user_id']}&gt;</td><td>{r['type']}</td><td>{claimed}</td><td>{first_response}</td><td>{product}</td><td>{stars}</td><td>{transcript}</td><td>{r['created_at']}</td></tr>"
         if not rows:
-            html += "<tr><td colspan=8 style=color:#666>Noch keine Ticket-Daten vorhanden.</td></tr>"
+            html += "<tr><td colspan=9 style=color:#666>Noch keine Ticket-Daten vorhanden.</td></tr>"
         html += "</table></div>"
         return page(html)
     @app.route("/staff")
@@ -2537,19 +2821,18 @@ async def main():
 ╔══════════════════════════════════════════════════════════════╗
 ║  ❌ DISCORD_TOKEN fehlt!                                   ║
 ║                                                              ║
-║  Bearbeite oben im File:                                    ║
-║    TOKEN = "MTxxxxxxxxxxxxxxxx..."                           ║
-║  oder .env:                                                 ║
+║  Trage deinen Token in die .env ein:                        ║
 ║    DISCORD_TOKEN=xxx                                        ║
 ║    GUILD_ID=123456789                                       ║
 ║    OWNER_ID=123456789                                       ║
+║    DASHBOARD_LOGIN=dein-login-code                          ║
 ║                                                              ║
-║  Dann:                                                      ║
-║    !start  → erstellt Rollen + ~30 Kanäle + erweitertes LogSystem ║
-║                                                              ║
-║  pip install discord.py aiohttp aiosqlite Flask python-dotenv║
+║  Danach kannst du `!start` ausführen.                       ║
+║  Das Dashboard bleibt bis dahin trotzdem online.            ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
+        while DASHBOARD_ENABLED and HAS_FLASK:
+            await asyncio.sleep(3600)
         await asyncio.sleep(2)
         sys.exit(0)
     # Stats Loop starten
