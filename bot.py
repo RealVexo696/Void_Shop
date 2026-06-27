@@ -1689,26 +1689,29 @@ async def setup_command(ctx):
     # SCHRITT 0: RESET (falls gewählt)
     # ═══════════════════════════════════════
     if view.value == "reset":
-        status_embed.description = "> 🧹 Lösche alte Kanäle & Rollen..."
+        status_embed.description = "> 🧹 Lösche alte Kanäle..."
         await status_msg.edit(embed=status_embed)
 
         for channel in list(guild.channels):
             if channel.id != ctx.channel.id:
                 try:
                     await channel.delete()
-                    await asyncio.sleep(0.15)
+                    await asyncio.sleep(0.6)
                 except Exception:
                     pass
+
+        status_embed.description = "> 🧹 Lösche alte Rollen..."
+        await status_msg.edit(embed=status_embed)
 
         for role in list(guild.roles):
             if role != guild.default_role and not role.managed and role < bot_member.top_role:
                 try:
                     await role.delete()
-                    await asyncio.sleep(0.15)
+                    await asyncio.sleep(0.6)
                 except Exception:
                     pass
 
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
 
     # ═══════════════════════════════════════
     # SCHRITT 1: ALLE 23 ROLLEN ERSTELLEN
@@ -1755,8 +1758,9 @@ async def setup_command(ctx):
     roles_skipped = 0
     roles_failed = 0
     role_errors = []
+    total_roles = len(role_definitions)
 
-    for role_name, color_hex in role_definitions:
+    for idx, (role_name, color_hex) in enumerate(role_definitions, 1):
         # Prüfe ob Rolle bereits existiert
         existing = discord.utils.get(guild.roles, name=role_name)
         if existing:
@@ -1764,32 +1768,57 @@ async def setup_command(ctx):
             roles_skipped += 1
             continue
 
-        # Erstelle Rolle OHNE spezielle Permissions (sauber & fehlerfrei)
-        # Permissions werden später über Kanal-Overwrites gesteuert!
-        try:
-            new_role = await guild.create_role(
-                name=role_name,
-                color=discord.Color(color_hex),
-                hoist=True,
-                mentionable=True,
-                reason="𝗩𝗢𝗜𝗗 Setup - Automatische Rollenerstellung"
-            )
-            all_roles[role_name] = new_role
-            roles_created += 1
-            logger.info(f"✅ Rolle erstellt: {role_name}")
-            await asyncio.sleep(0.3)
-        except discord.Forbidden as e:
+        # Live-Fortschritt anzeigen (alle 3 Rollen updaten)
+        if (idx - 1) % 3 == 0:
+            try:
+                status_embed.description = f"> 👑 **Schritt 1/4:** Erstelle Rollen... ({idx}/{total_roles})\n> Aktuell: `{role_name}`"
+                await status_msg.edit(embed=status_embed)
+            except Exception:
+                pass
+
+        # Erstelle Rolle mit Retry bei Rate-Limit
+        created = False
+        for attempt in range(3):
+            try:
+                new_role = await guild.create_role(
+                    name=role_name,
+                    color=discord.Color(color_hex),
+                    hoist=True,
+                    mentionable=True,
+                    reason="VOID Setup"
+                )
+                all_roles[role_name] = new_role
+                roles_created += 1
+                created = True
+                logger.info(f"✅ Rolle erstellt ({idx}/{total_roles}): {role_name}")
+                break
+            except discord.HTTPException as e:
+                if e.status == 429:
+                    # Rate-Limited → warten und nochmal versuchen
+                    retry_after = getattr(e, 'retry_after', 5) or 5
+                    logger.warning(f"⏳ Rate-Limit bei Rolle {role_name}, warte {retry_after}s (Versuch {attempt+1}/3)")
+                    await asyncio.sleep(retry_after + 1)
+                else:
+                    role_errors.append(f"{role_name}: HTTP {e.status}")
+                    logger.error(f"❌ HTTPException bei Rolle {role_name}: {e}")
+                    break
+            except discord.Forbidden as e:
+                role_errors.append(f"{role_name}: Keine Berechtigung")
+                logger.error(f"❌ Forbidden bei Rolle {role_name}: {e}")
+                break
+            except Exception as e:
+                role_errors.append(f"{role_name}: {type(e).__name__}")
+                logger.error(f"❌ Fehler bei Rolle {role_name}: {e}")
+                break
+
+        if not created and role_name not in [err.split(":")[0] for err in role_errors]:
             roles_failed += 1
-            role_errors.append(f"{role_name}: Keine Berechtigung")
-            logger.error(f"❌ Forbidden bei Rolle {role_name}: {e}")
-        except discord.HTTPException as e:
+            role_errors.append(f"{role_name}: Max Retries erreicht")
+        elif not created:
             roles_failed += 1
-            role_errors.append(f"{role_name}: HTTP-Fehler ({e.status})")
-            logger.error(f"❌ HTTPException bei Rolle {role_name}: {e}")
-        except Exception as e:
-            roles_failed += 1
-            role_errors.append(f"{role_name}: {type(e).__name__}")
-            logger.error(f"❌ Fehler bei Rolle {role_name}: {e}")
+
+        # Pause zwischen Rollen (Rate-Limit Schutz)
+        await asyncio.sleep(1.0)
 
     # Falls NICHTS erstellt werden konnte → Abbruch mit Hilfestellung
     if roles_created == 0 and roles_skipped == 0:
@@ -2055,9 +2084,17 @@ async def setup_command(ctx):
 
     channels_by_name = {}
     channels_created = 0
+    total_categories = len(categories_layout)
 
-    for cat_data in categories_layout:
+    for cat_idx, cat_data in enumerate(categories_layout, 1):
         cat_overwrites = build_overwrites(cat_data["mode"])
+
+        # Live-Fortschritt
+        try:
+            status_embed.description = f"> 👑 **Schritt 1/4:** ✅ {roles_created} Rollen erstellt, {roles_skipped} übersprungen\n\n> 📁 **Schritt 2/4:** Erstelle Kanäle... (Kategorie {cat_idx}/{total_categories})\n> Aktuell: `{cat_data['name']}`"
+            await status_msg.edit(embed=status_embed)
+        except Exception:
+            pass
 
         # Kategorie finden oder erstellen
         category = discord.utils.get(guild.categories, name=cat_data["name"])
@@ -2066,9 +2103,9 @@ async def setup_command(ctx):
                 category = await guild.create_category(
                     name=cat_data["name"],
                     overwrites=cat_overwrites,
-                    reason="𝗩𝗢𝗜𝗗 Setup"
+                    reason="VOID Setup"
                 )
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(1.0)
             except discord.Forbidden:
                 embed_err = create_prestige_embed(
                     title="⚠️ FEHLER: Keine Berechtigung für Kanäle!",
@@ -2089,42 +2126,61 @@ async def setup_command(ctx):
 
         # Kanäle in der Kategorie erstellen
         for ch_data in cat_data["channels"]:
-            # Custom Overwrites für spezielle Lounges
             ch_overwrites = build_overwrites(ch_data.get("overwrite_mode", cat_data["mode"]))
 
             if ch_data["type"] == "voice":
                 existing = discord.utils.get(category.voice_channels, name=ch_data["name"])
                 if not existing:
-                    try:
-                        channel = await guild.create_voice_channel(
-                            name=ch_data["name"],
-                            category=category,
-                            overwrites=ch_overwrites,
-                            reason="𝗩𝗢𝗜𝗗 Setup"
-                        )
-                        channels_by_name[ch_data["name"]] = channel
-                        channels_created += 1
-                        await asyncio.sleep(0.2)
-                    except Exception as e:
-                        logger.error(f"Voice-Kanal Fehler {ch_data['name']}: {e}")
+                    for attempt in range(3):
+                        try:
+                            channel = await guild.create_voice_channel(
+                                name=ch_data["name"],
+                                category=category,
+                                overwrites=ch_overwrites,
+                                reason="VOID Setup"
+                            )
+                            channels_by_name[ch_data["name"]] = channel
+                            channels_created += 1
+                            break
+                        except discord.HTTPException as e:
+                            if e.status == 429:
+                                retry_after = getattr(e, 'retry_after', 5) or 5
+                                await asyncio.sleep(retry_after + 1)
+                            else:
+                                logger.error(f"Voice-Kanal Fehler {ch_data['name']}: {e}")
+                                break
+                        except Exception as e:
+                            logger.error(f"Voice-Kanal Fehler {ch_data['name']}: {e}")
+                            break
+                    await asyncio.sleep(0.8)
                 else:
                     channels_by_name[ch_data["name"]] = existing
             else:
                 existing = discord.utils.get(category.text_channels, name=ch_data["name"])
                 if not existing:
-                    try:
-                        channel = await guild.create_text_channel(
-                            name=ch_data["name"],
-                            category=category,
-                            overwrites=ch_overwrites,
-                            topic=ch_data.get("topic", ""),
-                            reason="𝗩𝗢𝗜𝗗 Setup"
-                        )
-                        channels_by_name[ch_data["name"]] = channel
-                        channels_created += 1
-                        await asyncio.sleep(0.2)
-                    except Exception as e:
-                        logger.error(f"Text-Kanal Fehler {ch_data['name']}: {e}")
+                    for attempt in range(3):
+                        try:
+                            channel = await guild.create_text_channel(
+                                name=ch_data["name"],
+                                category=category,
+                                overwrites=ch_overwrites,
+                                topic=ch_data.get("topic", ""),
+                                reason="VOID Setup"
+                            )
+                            channels_by_name[ch_data["name"]] = channel
+                            channels_created += 1
+                            break
+                        except discord.HTTPException as e:
+                            if e.status == 429:
+                                retry_after = getattr(e, 'retry_after', 5) or 5
+                                await asyncio.sleep(retry_after + 1)
+                            else:
+                                logger.error(f"Text-Kanal Fehler {ch_data['name']}: {e}")
+                                break
+                        except Exception as e:
+                            logger.error(f"Text-Kanal Fehler {ch_data['name']}: {e}")
+                            break
+                    await asyncio.sleep(0.8)
                 else:
                     channels_by_name[ch_data["name"]] = existing
 
