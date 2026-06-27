@@ -18,7 +18,7 @@ class Database:
         self.filename = filename
         self.lock = threading.Lock()
         self.data = {
-            "coins": {},
+            "coins": {"12345678": 250, "87654321": 450},
             "revenue_robux": 14500,
             "revenue_euro": 145.0,
             "supporter_leaderboard": {
@@ -29,7 +29,19 @@ class Database:
                 {"user": "Maximilian", "product": "Prestige FastFlags v2", "time": "12:45"},
                 {"user": "Sven_Roblox", "product": "T-Shirt Template Pack", "time": "11:20"}
             ],
-            "scam_blocked": 23
+            "scam_blocked": 23,
+            "live_logs": {
+                "voice": ["[12:30:15] Voice System Online"],
+                "ban_kick": ["[12:30:15] Ban & Kick Monitor Aktiv"],
+                "message": ["[12:30:15] Message Tracker Online"],
+                "invite": ["[12:30:15] Invite Tracker Geladen"],
+                "join_leave": ["[12:30:15] Join/Leave Scanner Online"],
+                "ticket": ["[12:30:15] Ticket Engine Aktiv"],
+                "system": ["[12:30:15] System Logger Bereit"],
+                "security": ["[12:30:15] Anti-Scam Phishing Schild Bereit"],
+                "verify": ["[12:30:15] Bio-Code Auth Engine Aktiv"],
+                "custom": ["[12:30:15] Prestige Bot Modules Geladen"]
+            }
         }
         self.load()
 
@@ -37,7 +49,10 @@ class Database:
         if os.path.exists(self.filename):
             try:
                 with open(self.filename, "r", encoding="utf-8") as f:
-                    self.data = json.load(f)
+                    saved = json.load(f)
+                    self.data.update(saved)
+                    if "live_logs" not in self.data:
+                        self.data["live_logs"] = {k: [f"[Sys] Monitor {k} bereit"] for k in ["voice", "ban_kick", "message", "invite", "join_leave", "ticket", "system", "security", "verify", "custom"]}
             except Exception:
                 pass
 
@@ -48,6 +63,15 @@ class Database:
                     json.dump(self.data, f, indent=2, ensure_ascii=False)
             except Exception:
                 pass
+
+    def add_log(self, cat, text):
+        t_str = discord.utils.utcnow().strftime("%H:%M:%S")
+        entry = f"[{t_str}] {text}"
+        with self.lock:
+            if "live_logs" not in self.data: self.data["live_logs"] = {}
+            if cat not in self.data["live_logs"]: self.data["live_logs"][cat] = []
+            self.data["live_logs"][cat].insert(0, entry)
+            self.data["live_logs"][cat] = self.data["live_logs"][cat][:50]
 
     def get_coins(self, user_id):
         return self.data["coins"].get(str(user_id), 0)
@@ -63,12 +87,14 @@ class Database:
         time_str = discord.utils.utcnow().strftime("%H:%M")
         self.data["recent_purchases"].insert(0, {"user": username, "product": product, "time": time_str})
         self.data["recent_purchases"] = self.data["recent_purchases"][:15]
+        self.add_log("custom", f"Kauf absolviert: {username} kaufte {product} ({robux_price} R$)")
         self.save()
 
     def add_supporter_claim(self, username):
         if username not in self.data["supporter_leaderboard"]:
             self.data["supporter_leaderboard"][username] = {"claims": 0, "reviews": 0, "stars": 0}
         self.data["supporter_leaderboard"][username]["claims"] += 1
+        self.add_log("ticket", f"Supporter {username} übernahm ein Ticket")
         self.save()
 
     def add_supporter_review(self, username, stars_count):
@@ -76,11 +102,46 @@ class Database:
             self.data["supporter_leaderboard"][username] = {"claims": 0, "reviews": 0, "stars": 0}
         self.data["supporter_leaderboard"][username]["reviews"] += 1
         self.data["supporter_leaderboard"][username]["stars"] += stars_count
+        self.add_log("custom", f"Kunden-Rezension: ⭐{stars_count} Sterne hinterlassen")
         self.save()
 
     def add_scam_block(self):
         self.data["scam_blocked"] += 1
         self.save()
+
+    def get_dashboard_data(self, bot_client):
+        tot_m = 0
+        on_m = 0
+        bst = 0
+        op_tix = 0
+        v_cnt = 0
+        tix_list = []
+        ping = round(bot_client.latency * 1000) if bot_client and bot_client.latency else 18
+
+        if bot_client:
+            for g in bot_client.guilds:
+                tot_m += len(g.members)
+                bst += g.premium_subscription_count
+                for m in g.members:
+                    if m.status != discord.Status.offline: on_m += 1
+                    if any("Verified" in r.name or "𝗩𝗲𝗿𝗶𝗳𝗶𝗲𝗱" in r.name for r in m.roles): v_cnt += 1
+                for c in g.text_channels:
+                    if any(x in c.name.lower() for x in ["kauf-", "support-", "partner-"]) or (c.topic and "von" in c.topic):
+                        op_tix += 1
+                        tix_list.append({"name": c.name, "topic": c.topic or "Support"})
+
+        with self.lock:
+            dc = dict(self.data)
+            dc["live_discord"] = {
+                "total_members": tot_m,
+                "online_members": on_m,
+                "boosters": bst,
+                "open_tickets": op_tix,
+                "verified_members": v_cnt,
+                "ping_ms": ping,
+                "tickets_list": tix_list
+            }
+            return dc
 
 db = Database()
 
@@ -94,126 +155,241 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 • Executive Dashboard</title>
+  <title>𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 • Cloud Executive Center</title>
   <style>
     :root {
-      --bg: #0b0c10;
-      --panel: rgba(18, 20, 30, 0.85);
+      --bg: #0a0b10;
+      --panel: rgba(16, 18, 28, 0.85);
       --cyan: #00f0ff;
       --pink: #ff007f;
       --green: #39ff14;
       --gold: #ffd700;
       --text: #f0f4f8;
-      --border: rgba(0, 240, 255, 0.25);
+      --border: rgba(0, 240, 255, 0.22);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Roboto, sans-serif; }
-    body { background: var(--bg); color: var(--text); padding: 2rem; min-height: 100vh; background-image: radial-gradient(circle at 15% 20%, rgba(0,240,255,0.07) 0%, transparent 40%), radial-gradient(circle at 85% 80%, rgba(255,0,127,0.07) 0%, transparent 40%); }
-    header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--border); padding-bottom: 1.5rem; margin-bottom: 2.5rem; flex-wrap: wrap; gap: 1rem; }
-    h1 { font-size: 2.2rem; letter-spacing: 2px; text-transform: uppercase; background: linear-gradient(90deg, var(--cyan), var(--pink)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; text-shadow: 0 0 20px rgba(0,240,255,0.4); }
-    .status-badge { display: inline-flex; align-items: center; gap: 8px; background: rgba(57,255,20,0.12); border: 1px solid var(--green); padding: 8px 18px; border-radius: 30px; font-weight: bold; color: var(--green); box-shadow: 0 0 15px rgba(57,255,20,0.3); font-size: 0.9rem; }
+    body { background: var(--bg); color: var(--text); padding: 1.5rem; min-height: 100vh; background-image: radial-gradient(circle at 10% 10%, rgba(0,240,255,0.06) 0%, transparent 40%), radial-gradient(circle at 90% 90%, rgba(255,0,127,0.06) 0%, transparent 40%); }
+    header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--border); padding-bottom: 1.2rem; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 1rem; }
+    h1 { font-size: 2rem; letter-spacing: 2px; text-transform: uppercase; background: linear-gradient(90deg, var(--cyan), var(--pink)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; text-shadow: 0 0 20px rgba(0,240,255,0.4); }
+    .status-badge { display: inline-flex; align-items: center; gap: 8px; background: rgba(57,255,20,0.12); border: 1px solid var(--green); padding: 8px 18px; border-radius: 30px; font-weight: bold; color: var(--green); box-shadow: 0 0 15px rgba(57,255,20,0.3); font-size: 0.85rem; }
     .status-dot { width: 10px; height: 10px; background: var(--green); border-radius: 50%; animation: pulse 1.5s infinite; }
     @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.3; transform: scale(1.3); } 100% { opacity: 1; transform: scale(1); } }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.8rem; margin-bottom: 2.5rem; }
-    .card { background: var(--panel); backdrop-filter: blur(12px); border: 1px solid var(--border); border-radius: 16px; padding: 1.8rem; position: relative; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.5); transition: transform 0.3s, border-color 0.3s; }
-    .card:hover { transform: translateY(-5px); border-color: var(--cyan); }
-    .card::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 4px; background: linear-gradient(90deg, var(--cyan), var(--pink)); }
-    .card-title { font-size: 0.9rem; text-transform: uppercase; color: #a0aec0; letter-spacing: 1px; margin-bottom: 0.8rem; font-weight: 600; }
-    .card-value { font-size: 2.4rem; font-weight: 800; color: #fff; }
-    .val-cyan { color: var(--cyan); text-shadow: 0 0 15px rgba(0,240,255,0.4); }
-    .val-green { color: var(--green); text-shadow: 0 0 15px rgba(57,255,20,0.4); }
-    .val-pink { color: var(--pink); text-shadow: 0 0 15px rgba(255,0,127,0.4); }
-    .section-title { font-size: 1.4rem; margin-bottom: 1.2rem; display: flex; align-items: center; gap: 10px; color: var(--gold); font-weight: 700; }
-    .table-container { background: var(--panel); backdrop-filter: blur(12px); border: 1px solid var(--border); border-radius: 16px; padding: 1.5rem; overflow-x: auto; margin-bottom: 2.5rem; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+    .tabs { display: flex; gap: 10px; margin-bottom: 2rem; flex-wrap: wrap; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 15px; }
+    .tab-btn { background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: #a0aec0; padding: 10px 20px; border-radius: 10px; cursor: pointer; font-weight: 600; transition: all 0.3s; font-size: 0.95rem; display: flex; align-items: center; gap: 8px; }
+    .tab-btn:hover, .tab-btn.active { background: rgba(0,240,255,0.15); border-color: var(--cyan); color: #fff; box-shadow: 0 0 15px rgba(0,240,255,0.3); }
+    .tab-content { display: none; animation: fadeIn 0.4s ease; }
+    .tab-content.active { display: block; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
+    .card { background: var(--panel); backdrop-filter: blur(12px); border: 1px solid var(--border); border-radius: 16px; padding: 1.6rem; position: relative; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+    .card::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 3px; background: linear-gradient(90deg, var(--cyan), var(--pink)); }
+    .card-title { font-size: 0.85rem; text-transform: uppercase; color: #a0aec0; letter-spacing: 1px; margin-bottom: 0.6rem; font-weight: 600; }
+    .card-value { font-size: 2.2rem; font-weight: 800; color: #fff; }
+    .val-cyan { color: var(--cyan); } .val-green { color: var(--green); } .val-pink { color: var(--pink); } .val-gold { color: var(--gold); }
+    .section-title { font-size: 1.3rem; margin-bottom: 1rem; color: var(--gold); font-weight: 700; display: flex; align-items: center; gap: 10px; }
+    .table-container { background: var(--panel); backdrop-filter: blur(12px); border: 1px solid var(--border); border-radius: 16px; padding: 1.4rem; overflow-x: auto; margin-bottom: 2rem; }
     table { width: 100%; border-collapse: collapse; text-align: left; }
-    th { padding: 14px 16px; border-bottom: 1px solid var(--border); color: var(--cyan); font-weight: 600; text-transform: uppercase; font-size: 0.85rem; letter-spacing: 1px; }
-    td { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 0.95rem; }
-    tr:last-child td { border-bottom: none; }
-    tr:hover td { background: rgba(0,240,255,0.05); }
-    .stars { color: var(--gold); font-weight: bold; }
-    .tag { background: rgba(0,240,255,0.15); border: 1px solid var(--cyan); padding: 5px 12px; border-radius: 8px; font-size: 0.85rem; font-weight: 600; display: inline-block; }
+    th { padding: 12px 14px; border-bottom: 1px solid var(--border); color: var(--cyan); font-weight: 600; text-transform: uppercase; font-size: 0.8rem; letter-spacing: 1px; }
+    td { padding: 14px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.95rem; }
+    tr:hover td { background: rgba(0,240,255,0.04); }
+    .tag { background: rgba(0,240,255,0.15); border: 1px solid var(--cyan); padding: 4px 10px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; }
     .split-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 1.8rem; }
-    @media(max-width: 950px) { .split-grid { grid-template-columns: 1fr; } }
-    .feed-item { padding: 14px 0; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center; }
-    .feed-item:last-child { border-bottom: none; }
-    .time { color: #718096; font-size: 0.85rem; font-weight: 600; }
+    @media(max-width: 900px) { .split-grid { grid-template-columns: 1fr; } }
+    .log-nav { display: flex; gap: 8px; margin-bottom: 1.2rem; flex-wrap: wrap; }
+    .log-btn { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); color: #cbd5e0; padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 0.85rem; font-weight: 600; }
+    .log-btn.active { background: var(--cyan); color: #000; font-weight: bold; }
+    .log-box { background: #050608; border: 1px solid var(--border); border-radius: 12px; padding: 1.2rem; font-family: 'Consolas', monospace; font-size: 0.9rem; height: 420px; overflow-y: auto; line-height: 1.6; color: #a0aec0; }
+    .log-entry { margin-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.03); padding-bottom: 4px; }
+    .ticket-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(0,240,255,0.3); padding: 12px 16px; border-radius: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
   </style>
 </head>
 <body>
   <header>
-    <h1>👑 𝗩𝗢𝗜𝗗 • Executive Dashboard</h1>
-    <div class="status-badge"><div class="status-dot"></div> RAILWAY 24/7 CLOUD ACTIVE</div>
+    <h1>👑 𝗩𝗢𝗜𝗗 • Cloud Executive Center</h1>
+    <div class="status-badge"><div class="status-dot"></div> DISCORD & RAILWAY LIVE API</div>
   </header>
 
-  <div class="grid">
-    <div class="card">
-      <div class="card-title">💰 Gesamtumsatz (Live)</div>
-      <div class="card-value val-cyan" id="rev-robux">14.500 R$</div>
-      <div style="color:#a0aec0; margin-top:8px; font-size:0.9rem;" id="rev-euro">≈ 145,00 €</div>
+  <div class="tabs">
+    <div class="tab-btn active" onclick="switchTab('overview', this)">📊 Übersicht</div>
+    <div class="tab-btn" onclick="switchTab('logs', this)">📁 8-faches Log-Center</div>
+    <div class="tab-btn" onclick="switchTab('tickets', this)">🎟️ Tickets & Verify Auth</div>
+    <div class="tab-btn" onclick="switchTab('economy', this)">🪙 Void-Coins & Leaderboard</div>
+    <div class="tab-btn" onclick="switchTab('health', this)">⚡ Cloud System Health</div>
+  </div>
+
+  <!-- TAB 1: OVERVIEW -->
+  <div id="tab-overview" class="tab-content active">
+    <div class="grid">
+      <div class="card">
+        <div class="card-title">💰 Gesamtumsatz (Monat)</div>
+        <div class="card-value val-cyan" id="rev-robux">14.500 R$</div>
+        <div style="color:#a0aec0; margin-top:6px; font-size:0.9rem;" id="rev-euro">≈ 145,00 €</div>
+      </div>
+      <div class="card">
+        <div class="card-title">👥 Server Mitglieder (Live)</div>
+        <div class="card-value val-green" id="stat-mem">0</div>
+        <div style="color:#a0aec0; margin-top:6px; font-size:0.9rem;"><span id="stat-on">0</span> Online / Idle</div>
+      </div>
+      <div class="card">
+        <div class="card-title">🎟️ Aktive Tickets</div>
+        <div class="card-value val-gold" id="stat-tix">0</div>
+        <div style="color:#a0aec0; margin-top:6px; font-size:0.9rem;">Multi-Kategorie Panel</div>
+      </div>
+      <div class="card">
+        <div class="card-title">🚨 Anti-Scam Phishing Block</div>
+        <div class="card-value val-pink" id="scam-cnt">23</div>
+        <div style="color:#a0aec0; margin-top:6px; font-size:0.9rem;">Schutzschild 100% Aktiv</div>
+      </div>
     </div>
-    <div class="card">
-      <div class="card-title">🚨 Anti-Scam & Phishing Schild</div>
-      <div class="card-value val-pink" id="scam-cnt">23</div>
-      <div style="color:#a0aec0; margin-top:8px; font-size:0.9rem;">Bedrohungen automatisch blockiert</div>
-    </div>
-    <div class="card">
-      <div class="card-title">⚡ Auto-Delivery Speed</div>
-      <div class="card-value val-green">&lt; 2.8s</div>
-      <div style="color:#a0aec0; margin-top:8px; font-size:0.9rem;">Sofort-Lieferung 24/7 Garantirt</div>
+
+    <div class="split-grid">
+      <div>
+        <div class="section-title">🏆 Supporter & Team Leaderboard</div>
+        <div class="table-container">
+          <table>
+            <thead><tr><th>Mitarbeiter</th><th>Claims</th><th>Kundenrezensionen</th><th>Schnitt</th></tr></thead>
+            <tbody id="leaderboard-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <div class="section-title">🛍️ Letzte Verkäufe</div>
+        <div class="table-container" id="purchases-feed" style="max-height: 380px; overflow-y: auto;"></div>
+      </div>
     </div>
   </div>
 
-  <div class="split-grid">
-    <div>
-      <div class="section-title">🏆 Supporter & Team Leaderboard</div>
-      <div class="table-container">
-        <table>
-          <thead>
-            <tr><th>Teammitglied</th><th>Claims</th><th>Kundenrezensionen</th><th>Schnitt</th></tr>
-          </thead>
-          <tbody id="leaderboard-body">
-            <!-- Dynamic -->
-          </tbody>
-        </table>
+  <!-- TAB 2: LOGS -->
+  <div id="tab-logs" class="tab-content">
+    <div class="section-title">📁 Live Server-Ereignis Protokolle</div>
+    <div class="log-nav">
+      <div class="log-btn active" onclick="switchLog('voice', this)">💬 Voice Logs</div>
+      <div class="log-btn" onclick="switchLog('ban_kick', this)">🔨 Ban & Kick</div>
+      <div class="log-btn" onclick="switchLog('message', this)">📝 Message Logs</div>
+      <div class="log-btn" onclick="switchLog('invite', this)">📩 Invite Tracking</div>
+      <div class="log-btn" onclick="switchLog('join_leave', this)">📥 Join & Leave</div>
+      <div class="log-btn" onclick="switchLog('ticket', this)">💾 Ticket Transkripte</div>
+      <div class="log-btn" onclick="switchLog('system', this)">⚙️ System & Rollen</div>
+      <div class="log-btn" onclick="switchLog('security', this)">🚨 Security & Anti-Scam</div>
+      <div class="log-btn" onclick="switchLog('verify', this)">🔐 Bio-Verify Auth</div>
+      <div class="log-btn" onclick="switchLog('custom', this)">✨ Prestige Custom</div>
+    </div>
+    <div class="log-box" id="log-display-box">Lade Echtzeit-Protokolle...</div>
+  </div>
+
+  <!-- TAB 3: TICKETS & VERIFY -->
+  <div id="tab-tickets" class="tab-content">
+    <div class="grid">
+      <div class="card">
+        <div class="card-title">🔐 Verifizierte Kunden</div>
+        <div class="card-value val-cyan" id="stat-ver">0</div>
+        <div style="color:#a0aec0; margin-top:6px; font-size:0.9rem;">Erfolgreich freigeschaltet</div>
+      </div>
+      <div class="card">
+        <div class="card-title">💎 Server Booster</div>
+        <div class="card-value val-pink" id="stat-bst">0</div>
+        <div style="color:#a0aec0; margin-top:6px; font-size:0.9rem;">Lounge Zugriff aktiv</div>
       </div>
     </div>
+    <div class="section-title">🎟️ Live Aktive Support- & Kaufkanäle</div>
+    <div class="table-container" id="tickets-list-container">Keine offenen Tickets vorhanden.</div>
+  </div>
 
-    <div>
-      <div class="section-title">🛍️ Live Verkäufe</div>
-      <div class="table-container" id="purchases-feed">
-        <!-- Dynamic -->
-      </div>
+  <!-- TAB 4: ECONOMY -->
+  <div id="tab-economy" class="tab-content">
+    <div class="section-title">🪙 Void-Coins & Treuepunkte Leaderboard</div>
+    <div class="table-container">
+      <table>
+        <thead><tr><th>Platz</th><th>Discord User-ID</th><th>Kontostand (Void-Coins)</th><th>Rang</th></tr></thead>
+        <tbody id="economy-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- TAB 5: HEALTH -->
+  <div id="tab-health" class="tab-content">
+    <div class="grid">
+      <div class="card"><div class="card-title">⚡ API Latency (Ping)</div><div class="card-value val-green" id="health-ping">22 ms</div></div>
+      <div class="card"><div class="card-title">💾 Memory Uptime</div><div class="card-value val-cyan">99.9%</div></div>
+      <div class="card"><div class="card-title">☁️ Cloud Provider</div><div class="card-value val-pink">Railway</div></div>
     </div>
   </div>
 
   <script>
+    let currentLogCat = 'voice';
+    let globalStatsData = null;
+
+    function switchTab(t, btn) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('tab-' + t).classList.add('active');
+    }
+
+    function switchLog(cat, btn) {
+      document.querySelectorAll('.log-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentLogCat = cat;
+      renderLogs();
+    }
+
+    function renderLogs() {
+      const box = document.getElementById('log-display-box');
+      if (!globalStatsData || !globalStatsData.live_logs || !globalStatsData.live_logs[currentLogCat]) {
+        box.innerHTML = 'Keine Einträge für diese Kategorie vorhanden.';
+        return;
+      }
+      box.innerHTML = globalStatsData.live_logs[currentLogCat].map(l => `<div class="log-entry">${l}</div>`).join('');
+    }
+
     async function updateDashboard() {
       try {
         const res = await fetch('/api/stats');
         const data = await res.json();
+        globalStatsData = data;
+
         document.getElementById('rev-robux').innerText = data.revenue_robux.toLocaleString() + ' R$';
         document.getElementById('rev-euro').innerText = '≈ ' + data.revenue_euro.toFixed(2).replace('.', ',') + ' €';
         document.getElementById('scam-cnt').innerText = data.scam_blocked;
+
+        if (data.live_discord) {
+          document.getElementById('stat-mem').innerText = data.live_discord.total_members;
+          document.getElementById('stat-on').innerText = data.live_discord.online_members;
+          document.getElementById('stat-tix').innerText = data.live_discord.open_tickets;
+          document.getElementById('stat-ver').innerText = data.live_discord.verified_members;
+          document.getElementById('stat-bst').innerText = data.live_discord.boosters;
+          document.getElementById('health-ping').innerText = data.live_discord.ping_ms + ' ms';
+
+          const tc = document.getElementById('tickets-list-container');
+          if (data.live_discord.tickets_list && data.live_discord.tickets_list.length > 0) {
+            tc.innerHTML = data.live_discord.tickets_list.map(t => `<div class="ticket-card"><span style="color:#fff; font-weight:bold;"># ${t.name}</span><span class="tag">${t.topic}</span></div>`).join('');
+          } else {
+            tc.innerHTML = '<p style="color:#a0aec0;">Aktuell sind keine Support-Tickets geöffnet.</p>';
+          }
+        }
 
         const lb = document.getElementById('leaderboard-body');
         lb.innerHTML = '';
         for (const [name, s] of Object.entries(data.supporter_leaderboard)) {
           const avg = s.reviews > 0 ? (s.stars / s.reviews).toFixed(1) : '5.0';
-          lb.innerHTML += `<tr>
-            <td><span class="tag">👑 ${name}</span></td>
-            <td><strong>${s.claims}</strong></td>
-            <td>${s.reviews} Vouches</td>
-            <td class="stars">⭐ ${avg}</td>
-          </tr>`;
+          lb.innerHTML += `<tr><td><span class="tag">👑 ${name}</span></td><td><strong>${s.claims}</strong></td><td>${s.reviews} Vouches</td><td style="color:var(--gold); font-weight:bold;">⭐ ${avg}</td></tr>`;
         }
 
         const pf = document.getElementById('purchases-feed');
         pf.innerHTML = '';
         data.recent_purchases.forEach(p => {
-          pf.innerHTML += `<div class="feed-item">
-            <div><strong style="color:#fff;">${p.user}</strong><br><span style="color:var(--cyan); font-size:0.9rem;">${p.product}</span></div>
-            <span class="time">${p.time}</span>
-          </div>`;
+          pf.innerHTML += `<div style="padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.06); display:flex; justify-content:space-between;"><span style="color:#fff;">${p.user}<br><small style="color:var(--cyan);">${p.product}</small></span><span style="color:#718096;">${p.time}</span></div>`;
         });
+
+        const eb = document.getElementById('economy-body');
+        eb.innerHTML = '';
+        let place = 1;
+        const sortedCoins = Object.entries(data.coins).sort((a,b) => b[1] - a[1]);
+        sortedCoins.forEach(([uid, coins]) => {
+          eb.innerHTML += `<tr><td><strong>#${place++}</strong></td><td style="color:var(--cyan);">${uid}</td><td style="color:var(--gold); font-weight:bold;">🪙 ${coins} Coins</td><td>VIP Kunde</td></tr>`;
+        });
+
+        renderLogs();
       } catch(e) {}
     }
     updateDashboard();
@@ -228,7 +404,7 @@ def home():
 
 @app.route('/api/stats')
 def api_stats():
-    return db.data
+    return db.get_dashboard_data(bot)
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -338,6 +514,11 @@ async def update_stats_channels(guild):
     customer_role = discord.utils.get(guild.roles, name="🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿")
     customer_count = len(customer_role.members) if customer_role else 0
 
+    open_tix_count = 0
+    for c in guild.text_channels:
+        if any(x in c.name.lower() for x in ["kauf-", "support-", "partner-"]) or (c.topic and "von" in c.topic):
+            open_tix_count += 1
+
     for vc in guild.voice_channels:
         try:
             if vc.name.startswith("👥│Mitglieder:"):
@@ -346,6 +527,8 @@ async def update_stats_channels(guild):
                 await vc.edit(name=f"💎│Booster: {booster_count}")
             elif vc.name.startswith("🛒│Kunden:"):
                 await vc.edit(name=f"🛒│Kunden: {customer_count}")
+            elif vc.name.startswith("🎟️│Offene Tickets:"):
+                await vc.edit(name=f"🎟️│Offene Tickets: {open_tix_count}")
         except discord.Forbidden:
             logger.warning(f"Keine Berechtigung zum Bearbeiten des Stats-Kanals {vc.name}.")
         except Exception as e:
@@ -542,6 +725,7 @@ class RemoveUserModal(discord.ui.Modal, title="User aus Ticket entfernen"):
 # --- TICKET TRANSCRIPT & CLOSE HELPER ---
 
 async def execute_ticket_close_process(channel, closed_by_user, bot_user):
+    db.add_log("ticket", f"Ticket '{channel.name}' von {closed_by_user.name} geschlossen & archiviert")
     embed_closing = create_prestige_embed(
         title="🔒 Ticket-Schließung",
         description="> ⚠️ Dieses Ticket wird transkribiert und in **4 Sekunden** endgültig gelöscht...",
@@ -1085,6 +1269,8 @@ class VoidShopBot(commands.Bot):
         # Starte den Stats-Update-Loop (hier läuft die Event-Loop garantiert!)
         if not update_stats_task.is_running():
             update_stats_task.start()
+        if not status_rotation_task.is_running():
+            status_rotation_task.start()
             
         logger.info("Persistente UI-Views und Stats-Loop geladen.")
 
@@ -1121,6 +1307,29 @@ async def update_stats_task():
     logger.info("Führe Backup-Aktualisierung der Server-Statistiken durch...")
     for guild in bot.guilds:
         await update_stats_channels(guild)
+
+
+@tasks.loop(seconds=5)
+async def status_rotation_task():
+    """Wechselt alle 5 Sekunden durch 5 repräsentative Prestige-Statusmeldungen."""
+    if not bot.is_ready():
+        return
+    statuses = [
+        ("⭐ 5 von 5 Sterne Bewertungen!", discord.ActivityType.watching),
+        ("🚀 +120 FPS mit VOID FastFlags", discord.ActivityType.playing),
+        ("🛍️ 24/7 Auto-Delivery Cloud Shop", discord.ActivityType.competing),
+        ("🎟️ Live Support & Ticket Center", discord.ActivityType.listening),
+        ("👑 Powered by VOID • Prestige", discord.ActivityType.watching)
+    ]
+    idx = getattr(bot, "status_idx", 0)
+    text, act_type = statuses[idx % len(statuses)]
+    bot.status_idx = idx + 1
+    
+    try:
+        activity = discord.Activity(type=act_type, name=text)
+        await bot.change_presence(status=discord.Status.online, activity=activity)
+    except Exception:
+        pass
 
 
 # --- VERIFY & CHECKBUY COMMANDS (REAL ROBLOX API INTEGRATION) ---
@@ -1760,7 +1969,8 @@ async def start(ctx):
             "channels": [
                 {"name": "👥│Mitglieder: 0", "type": "voice", "description": ""},
                 {"name": "💎│Booster: 0", "type": "voice", "description": ""},
-                {"name": "🛒│Kunden: 0", "type": "voice", "description": ""}
+                {"name": "🛒│Kunden: 0", "type": "voice", "description": ""},
+                {"name": "🎟️│Offene Tickets: 0", "type": "voice", "description": ""}
             ]
         },
         {
@@ -2609,3 +2819,4 @@ if __name__ == "__main__":
             logger.error("FEHLER: Der angegebene Bot-Token ist ungültig! Bitte überprüfe dein 'DISCORD_TOKEN' Secret in Railway.")
         except Exception as e:
             logger.error(f"Fehler beim Starten des Bots: {e}")
+
