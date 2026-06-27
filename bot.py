@@ -6,17 +6,17 @@ RealVexo696 / Void_Shop
 Companion to VOID-TOOLS v2.6 by V0id-v2
 
 v2.0 – 27.06.2026 ULTIMATE
-- !start → erstellt automatisch ~30 Kanäle + 12 Log-Kanäle + 37 Rollen
+- !start → erstellt automatisch ~30 Kanäle + erweitertes LogSystem + Shop-Struktur
 - Ticket-System: 🛒 Produkt kaufen / 💬 Allgemeiner Support / 🤝 Partnerschaft
 - Ticket-Close Survey: 3 Fragen
   Q1: Haben Sie etwas gekauft? Ja/Nein
   Q2: Was? → FastFlags / Sky / T-Shirt Template / Anti Alt Ban (Buttons)
   Q3: Sterne-Bewertung 1-5 (klickbare Buttons, kein Tippen)
 - Welcome / Leave schöner Text in #🎉・willkommen / #👋・auf-wiedersehen
-- One-Click Verify → Member Rolle (Unverified → Verified)
+- Discord-Zugang per 1-Klick + sichere Roblox Bio-Code-Auth für Shop-Käufe
 - Stats: Mitglieder / Booster / Kunden / offene Tickets (Live Voice-Channels)
 - Standard-Kanäle: regeln, willkommen, auf-wiedersehen, verify, fastflags, how-to-buy, …
-- LOGSYSTEM 2.0 Kommandozentrale – 12 Kanäle
+- LOGSYSTEM 2.0 Kommandozentrale – viele spezialisierte Log-Kanäle
 - Web Dashboard: Revenue, Staff-Leaderboard, Coins, Logs
 - Auto-Delivery, Bio-Code-Auth, AntiScam, Void-Coins
 
@@ -88,23 +88,27 @@ PREFIX = os.getenv("PREFIX","!")
 
 # Log IDs – werden von !start überschrieben, ENV ist Fallback
 LOG_JOIN     = int(os.getenv("LOG_JOIN","0") or 0)
+LOG_LEAVE    = int(os.getenv("LOG_LEAVE","0") or 0)
 LOG_VOICE    = int(os.getenv("LOG_VOICE","0") or 0)
 LOG_MESSAGE  = int(os.getenv("LOG_MESSAGE","0") or 0)
+LOG_INVITE   = int(os.getenv("LOG_INVITE","0") or 0)
 LOG_SHOP     = int(os.getenv("LOG_SHOP","0") or 0)
 LOG_VERIFY   = int(os.getenv("LOG_VERIFY","0") or 0)
 LOG_ANTISCAM = int(os.getenv("LOG_ANTISCAM","0") or 0)
 LOG_TICKET   = int(os.getenv("LOG_TICKET","0") or 0)
 LOG_COINS    = int(os.getenv("LOG_COINS","0") or 0)
 LOG_MOD      = int(os.getenv("LOG_MOD","0") or 0)
+LOG_SYSTEM   = int(os.getenv("LOG_SYSTEM","0") or 0)
 LOG_TICKER   = int(os.getenv("LOG_TICKER","0") or 0)
 LOG_BOT      = int(os.getenv("LOG_BOT","0") or 0)
 LOG_OWNER    = int(os.getenv("LOG_OWNER","0") or 0)
 
 # Runtime config – wird von !start gespeichert
 RUNTIME = {
-    "log_join": LOG_JOIN, "log_voice": LOG_VOICE, "log_message": LOG_MESSAGE,
-    "log_shop": LOG_SHOP, "log_verify": LOG_VERIFY, "log_antiscam": LOG_ANTISCAM,
-    "log_ticket": LOG_TICKET, "log_coins": LOG_COINS, "log_mod": LOG_MOD,
+    "log_join": LOG_JOIN, "log_leave": LOG_LEAVE, "log_voice": LOG_VOICE,
+    "log_message": LOG_MESSAGE, "log_invite": LOG_INVITE, "log_shop": LOG_SHOP,
+    "log_verify": LOG_VERIFY, "log_antiscam": LOG_ANTISCAM, "log_ticket": LOG_TICKET,
+    "log_coins": LOG_COINS, "log_mod": LOG_MOD, "log_system": LOG_SYSTEM,
     "log_ticker": LOG_TICKER, "log_bot": LOG_BOT, "log_owner": LOG_OWNER,
     # channels
     "welcome": int(os.getenv("WELCOME_CHANNEL_ID","0") or 0),
@@ -122,6 +126,7 @@ RUNTIME = {
     "role_vip": int(os.getenv("VIP_ROLE_ID","0") or 0),
     "role_booster":0,
     "role_staff": int(os.getenv("STAFF_ROLE_ID","0") or 0),
+    "role_head_staff":0, "role_moderator":0, "role_trial_supporter":0,
     "role_admin":0, "role_owner":0,
 }
 SERVER_CONFIG_FILE = "void_server_config.json"
@@ -149,9 +154,9 @@ def ticker_ch(): return L("ticker") or C("ticker_create") or 0
 ROBLOX_COOKIE = os.getenv("ROBLOX_COOKIE","")
 DASHBOARD_ENABLED = HAS_FLASK and os.getenv("DASHBOARD_DISABLE","0")!="1"
 DASHBOARD_HOST = os.getenv("DASHBOARD_HOST","0.0.0.0")
-DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT","5000"))
+DASHBOARD_PORT = int(os.getenv("PORT", os.getenv("DASHBOARD_PORT","5000")))
 DASHBOARD_SECRET = os.getenv("DASHBOARD_SECRET","voidshop-secret-change-me")
-DASHBOARD_LOGIN_CODE = os.getenv("DASHBOARD_LOGIN","voidshop")
+DASHBOARD_LOGIN_CODE = os.getenv("DASHBOARD_LOGIN") or (str(OWNER_ID) if OWNER_ID else "voidshop")
 DATABASE_PATH = os.getenv("DATABASE_PATH","void_shop.db")
 
 # =====================================================================
@@ -253,13 +258,14 @@ CREATE TABLE IF NOT EXISTS verify_codes(discord_id INTEGER PRIMARY KEY, roblox_i
 CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY AUTOINCREMENT, discord_id INTEGER, roblox_id INTEGER, product_key TEXT, gamepass_id INTEGER, robux_price INTEGER, delivered INTEGER DEFAULT 0, delivery_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS deliveries(id INTEGER PRIMARY KEY AUTOINCREMENT, purchase_id INTEGER, discord_id INTEGER, product_key TEXT, delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, dm_message_id TEXT, success INTEGER DEFAULT 1);
 CREATE TABLE IF NOT EXISTS coins_ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, discord_id INTEGER, amount INTEGER, reason TEXT, meta TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS invites(inviter_id INTEGER, invited_id INTEGER PRIMARY KEY, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, rewarded INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS invites(inviter_id INTEGER, invited_id INTEGER PRIMARY KEY, invite_code TEXT, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, rewarded INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS staff_stats(staff_id INTEGER PRIMARY KEY, tickets_claimed INTEGER DEFAULT 0, tickets_closed INTEGER DEFAULT 0, avg_response_sec INTEGER DEFAULT 0, rating_sum INTEGER DEFAULT 0, rating_count INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS antiscam_hits(id INTEGER PRIMARY KEY AUTOINCREMENT, discord_id INTEGER, channel_id INTEGER, url TEXT, reason TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY AUTOINCREMENT, log_type TEXT, discord_id INTEGER, channel_id INTEGER, content TEXT, meta TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS vouches(id INTEGER PRIMARY KEY AUTOINCREMENT, discord_id INTEGER, stars INTEGER, message TEXT, coins_awarded INTEGER DEFAULT 0, product TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS revenue_daily(day TEXT PRIMARY KEY, robux INTEGER DEFAULT 0, purchases INTEGER DEFAULT 0, customers INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS tickets_open(channel_id INTEGER PRIMARY KEY, user_id INTEGER, type TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, closed INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS ticket_metrics(channel_id INTEGER PRIMARY KEY, claimed_by INTEGER, claimed_at TIMESTAMP, first_staff_response_at TIMESTAMP, closer_id INTEGER, closed_at TIMESTAMP, survey_product TEXT, survey_stars INTEGER);
 CREATE TABLE IF NOT EXISTS server_config(k TEXT PRIMARY KEY, v TEXT);
 """
 
@@ -312,6 +318,10 @@ else:
 async def init_db():
     async with get_db() as db:
         await db.executescript(DB_SCHEMA)
+        try:
+            await db_execute(db, "ALTER TABLE invites ADD COLUMN invite_code TEXT")
+        except Exception:
+            pass
         await db_commit(db)
     print(f"[DB] ready → {DATABASE_PATH} (aiosqlite={HAS_AIOSQLITE})")
 
@@ -454,10 +464,10 @@ def scan_message_antiscam(content:str)->list:
 #  📜 LOGGER
 # =====================================================================
 LOG_COLORS = {
-    "join":0x2ecc71,"voice":0x3498db,"message":0xe67e22,"shop":0xf1c40f,
-    "verify":0x9b59b6,"antiscam":0xe74c3c,"ticket":0x1abc9c,
-    "coins":0xFFD700,"mod":0xe74c3c,"ticker":0xFFD700,
-    "bot":0x95a5a6,"owner":0x2c3e50,
+    "join":0x2ecc71, "leave":0x95a5a6, "voice":0x3498db, "message":0xe67e22,
+    "invite":0x5865F2, "shop":0xf1c40f, "verify":0x9b59b6, "antiscam":0xe74c3c,
+    "ticket":0x1abc9c, "coins":0xFFD700, "mod":0xe74c3c, "system":0x7289DA,
+    "ticker":0xFFD700, "bot":0x95a5a6, "owner":0x2c3e50,
 }
 async def send_log(bot_obj, log_type:str, embed:discord.Embed=None, content:str=None,
                    discord_id:int=None, channel_id:int=None, meta:str=""):
@@ -551,6 +561,197 @@ async def count_open_tickets()->int:
         r = await cur.fetchone()
         return r[0] if r else 0
 
+def parse_db_ts(value):
+    if not value:
+        return None
+    if isinstance(value, datetime.datetime):
+        return value
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(str(value), fmt)
+        except Exception:
+            continue
+    return None
+
+def product_label(product_key:str)->str:
+    return PRODUCTS.get(product_key, {}).get("name", str(product_key).replace("_", " ").title())
+
+def staff_role_ids()->set[int]:
+    return {rid for rid in {
+        ROL("owner"), ROL("admin"), ROL("head_staff"), ROL("moderator"),
+        ROL("staff"), ROL("trial_supporter")
+    } if rid}
+
+def is_staff_member(member:discord.Member)->bool:
+    if getattr(member.guild_permissions, "administrator", False) or getattr(member.guild_permissions, "manage_guild", False):
+        return True
+    ids = staff_role_ids()
+    return any(getattr(role, "id", 0) in ids for role in getattr(member, "roles", []))
+
+async def get_ticket_row(channel_id:int):
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT channel_id, user_id, type, created_at, closed FROM tickets_open WHERE channel_id=?", (channel_id,))
+        return await cur.fetchone()
+
+async def get_ticket_metrics(channel_id:int):
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT * FROM ticket_metrics WHERE channel_id=?", (channel_id,))
+        return await cur.fetchone()
+
+async def ensure_ticket_metrics(channel_id:int):
+    async with get_db() as db:
+        await db_execute(db, "INSERT OR IGNORE INTO ticket_metrics(channel_id) VALUES(?)", (channel_id,))
+        await db_commit(db)
+
+async def claim_ticket(channel_id:int, staff_id:int):
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT closed FROM tickets_open WHERE channel_id=?", (channel_id,))
+        row = await cur.fetchone()
+        if not row:
+            return False, "not_found"
+        try:
+            closed = row[0]
+        except Exception:
+            closed = row["closed"]
+        if closed:
+            return False, "closed"
+        await db_execute(db, "INSERT OR IGNORE INTO ticket_metrics(channel_id) VALUES(?)", (channel_id,))
+        cur = await db_execute(db, "SELECT claimed_by FROM ticket_metrics WHERE channel_id=?", (channel_id,))
+        mrow = await cur.fetchone()
+        claimed_by = None
+        if mrow:
+            try:
+                claimed_by = mrow[0]
+            except Exception:
+                claimed_by = mrow["claimed_by"]
+        if claimed_by:
+            return False, claimed_by
+        await db_execute(db, "UPDATE ticket_metrics SET claimed_by=?, claimed_at=CURRENT_TIMESTAMP WHERE channel_id=?", (staff_id, channel_id))
+        await db_execute(db, "INSERT OR IGNORE INTO staff_stats(staff_id) VALUES(?)", (staff_id,))
+        await db_execute(db, "UPDATE staff_stats SET tickets_claimed=tickets_claimed+1 WHERE staff_id=?", (staff_id,))
+        await db_commit(db)
+    return True, staff_id
+
+async def note_ticket_staff_response(channel_id:int, staff_id:int):
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT user_id, created_at, closed FROM tickets_open WHERE channel_id=?", (channel_id,))
+        row = await cur.fetchone()
+        if not row:
+            return
+        try:
+            created_at = row[1]; closed = row[2]
+        except Exception:
+            created_at = row["created_at"]; closed = row["closed"]
+        if closed:
+            return
+        await db_execute(db, "INSERT OR IGNORE INTO ticket_metrics(channel_id) VALUES(?)", (channel_id,))
+        cur = await db_execute(db, "SELECT claimed_by, first_staff_response_at FROM ticket_metrics WHERE channel_id=?", (channel_id,))
+        mrow = await cur.fetchone()
+        claimed_by = None
+        first_response = None
+        if mrow:
+            try:
+                claimed_by, first_response = mrow[0], mrow[1]
+            except Exception:
+                claimed_by, first_response = mrow["claimed_by"], mrow["first_staff_response_at"]
+        if not claimed_by:
+            await db_execute(db, "UPDATE ticket_metrics SET claimed_by=?, claimed_at=CURRENT_TIMESTAMP WHERE channel_id=?", (staff_id, channel_id))
+            await db_execute(db, "INSERT OR IGNORE INTO staff_stats(staff_id) VALUES(?)", (staff_id,))
+            await db_execute(db, "UPDATE staff_stats SET tickets_claimed=tickets_claimed+1 WHERE staff_id=?", (staff_id,))
+            claimed_by = staff_id
+        if not first_response:
+            await db_execute(db, "UPDATE ticket_metrics SET first_staff_response_at=CURRENT_TIMESTAMP WHERE channel_id=?", (channel_id,))
+            created_dt = parse_db_ts(created_at)
+            response_sec = max(0, int((datetime.datetime.utcnow() - created_dt).total_seconds())) if created_dt else 0
+            await db_execute(db, "INSERT OR IGNORE INTO staff_stats(staff_id) VALUES(?)", (claimed_by,))
+            cur = await db_execute(db, "SELECT tickets_claimed, avg_response_sec FROM staff_stats WHERE staff_id=?", (claimed_by,))
+            srow = await cur.fetchone()
+            if srow:
+                try:
+                    tickets_claimed, avg_response_sec = srow[0], srow[1]
+                except Exception:
+                    tickets_claimed, avg_response_sec = srow["tickets_claimed"], srow["avg_response_sec"]
+                tickets_claimed = max(1, int(tickets_claimed or 1))
+                avg_response_sec = int(avg_response_sec or 0)
+                new_avg = response_sec if tickets_claimed <= 1 or avg_response_sec <= 0 else int(((avg_response_sec * (tickets_claimed - 1)) + response_sec) / tickets_claimed)
+                await db_execute(db, "UPDATE staff_stats SET avg_response_sec=? WHERE staff_id=?", (new_avg, claimed_by))
+        await db_commit(db)
+
+async def finalize_ticket_metrics(channel_id:int, closer_id:int, stars:int=None, product:str=None):
+    async with get_db() as db:
+        await db_execute(db, "INSERT OR IGNORE INTO ticket_metrics(channel_id) VALUES(?)", (channel_id,))
+        cur = await db_execute(db, "SELECT claimed_by FROM ticket_metrics WHERE channel_id=?", (channel_id,))
+        row = await cur.fetchone()
+        claimed_by = None
+        if row:
+            try:
+                claimed_by = row[0]
+            except Exception:
+                claimed_by = row["claimed_by"]
+        await db_execute(db, "UPDATE ticket_metrics SET closer_id=?, closed_at=CURRENT_TIMESTAMP, survey_product=?, survey_stars=? WHERE channel_id=?",
+            (closer_id, product, stars, channel_id))
+        target_staff = claimed_by or closer_id
+        if target_staff:
+            await db_execute(db, "INSERT OR IGNORE INTO staff_stats(staff_id) VALUES(?)", (target_staff,))
+            await db_execute(db, "UPDATE staff_stats SET tickets_closed=tickets_closed+1, rating_sum=rating_sum+?, rating_count=rating_count+? WHERE staff_id=?",
+                (stars or 0, 1 if stars else 0, target_staff))
+        await db_commit(db)
+
+async def refresh_invite_cache(guild:discord.Guild):
+    try:
+        invites = await guild.invites()
+    except Exception:
+        return
+    INVITE_CACHE[guild.id] = {
+        inv.code: {
+            "uses": inv.uses or 0,
+            "inviter_id": inv.inviter.id if inv.inviter else 0,
+            "url": getattr(inv, "url", "")
+        } for inv in invites
+    }
+
+async def detect_used_invite(guild:discord.Guild):
+    try:
+        invites = await guild.invites()
+    except Exception:
+        return None
+    before = INVITE_CACHE.get(guild.id, {})
+    used = None
+    for inv in invites:
+        prev = before.get(inv.code, {}).get("uses", 0)
+        if (inv.uses or 0) > prev:
+            used = inv
+            break
+    INVITE_CACHE[guild.id] = {
+        inv.code: {
+            "uses": inv.uses or 0,
+            "inviter_id": inv.inviter.id if inv.inviter else 0,
+            "url": getattr(inv, "url", "")
+        } for inv in invites
+    }
+    return used
+
+async def reward_invite_if_needed(inviter_id:int, invited_id:int, invite_code:str=""):
+    if not inviter_id or inviter_id == invited_id:
+        return False
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT rewarded FROM invites WHERE invited_id=?", (invited_id,))
+        row = await cur.fetchone()
+        if row:
+            try:
+                rewarded = row[0]
+            except Exception:
+                rewarded = row["rewarded"]
+            if rewarded:
+                return False
+        await db_execute(db, "INSERT OR REPLACE INTO invites(inviter_id, invited_id, invite_code, joined_at, rewarded) VALUES(?,?,?,CURRENT_TIMESTAMP,1)",
+            (inviter_id, invited_id, invite_code))
+        await db_commit(db)
+    await add_coins(inviter_id, COIN_REWARDS["invite"], "invite_reward", f"invited:{invited_id}")
+    return True
+
+INVITE_CACHE = {}
+
 # =====================================================================
 #  🤖 BOT
 # =====================================================================
@@ -561,6 +762,7 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None, ca
 class TicketPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+
     async def create_ticket(self, interaction:discord.Interaction, ttype:str, label:str):
         await interaction.response.defer(ephemeral=True, thinking=True)
         guild = interaction.guild
@@ -568,38 +770,49 @@ class TicketPanelView(discord.ui.View):
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True, embed_links=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, manage_messages=True)
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, manage_messages=True, read_message_history=True)
         }
-        # staff roles
-        for rk in ["staff","admin","moderator","supporter","owner"]:
-            rid = ROL(rk)
-            if rid:
-                r = guild.get_role(rid)
-                if r: overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
+        for role in guild.roles:
+            if role.id in staff_role_ids():
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
         cname = f"ticket-{interaction.user.name.lower()}"[:90].replace(" ", "-")
         try:
-            ch = await guild.create_text_channel(cname, category=cat, overwrites=overwrites,
-                reason=f"Void_Shop Ticket {ttype} by {interaction.user}", topic=f"User:{interaction.user.id}|Type:{ttype}")
+            ch = await guild.create_text_channel(
+                cname,
+                category=cat,
+                overwrites=overwrites,
+                reason=f"Void_Shop Ticket {ttype} by {interaction.user}",
+                topic=f"User:{interaction.user.id}|Type:{ttype}"
+            )
         except Exception as e:
             return await interaction.followup.send(f"❌ Konnte Ticket nicht erstellen: {e}", ephemeral=True)
         await ticket_open(ch.id, interaction.user.id, ttype)
         emb = discord.Embed(
             title=f"🎫 Ticket – {label}",
-            description=f"Hallo {interaction.user.mention}!\n\n**Typ:** {label}\nEin Supporter meldet sich in Kürze.\n\nBitte beschreibe dein Anliegen so genau wie möglich.",
+            description=(
+                f"Hallo {interaction.user.mention}!\n\n"
+                f"**Typ:** {label}\n"
+                "Ein Supporter meldet sich in Kürze.\n\n"
+                "• Supporter können das Ticket mit **🙋 Claimen** übernehmen\n"
+                "• Danach wird die Antwortzeit für dein Dashboard getrackt\n"
+                "• Beim Schließen erscheint automatisch die 3-Fragen-Umfrage"
+            ),
             color=0x1abc9c
         )
-        emb.set_footer(text="Void_Shop Ticket System • Schließen unten")
+        emb.set_footer(text="Void_Shop Ticket System • Claim + Survey + Staff Tracking")
         await ch.send(f"{interaction.user.mention}", embed=emb, view=TicketControlView())
         await interaction.followup.send(f"✅ Ticket erstellt: {ch.mention}", ephemeral=True)
         log_emb = make_embed("🎫 Ticket geöffnet", f"{interaction.user.mention} → {ch.mention}\nTyp: **{label}**", 0x1abc9c, interaction.user)
-        await send_log(bot, "ticket", log_emb, discord_id=interaction.user.id, channel_id=ch.id)
+        await send_log(bot, "ticket", log_emb, discord_id=interaction.user.id, channel_id=ch.id, meta=f"type={ttype}")
 
     @discord.ui.button(label="🛒 Produkt kaufen", style=discord.ButtonStyle.green, custom_id="ticket_buy_v2u")
     async def btn_buy(self, interaction:discord.Interaction, button:discord.ui.Button):
         await self.create_ticket(interaction, "buy", "Produkt kaufen")
+
     @discord.ui.button(label="💬 Allgemeiner Support", style=discord.ButtonStyle.blurple, custom_id="ticket_support_v2u")
     async def btn_support(self, interaction:discord.Interaction, button:discord.ui.Button):
         await self.create_ticket(interaction, "support", "Allgemeiner Support")
+
     @discord.ui.button(label="🤝 Partnerschaft", style=discord.ButtonStyle.gray, custom_id="ticket_partner_v2u")
     async def btn_partner(self, interaction:discord.Interaction, button:discord.ui.Button):
         await self.create_ticket(interaction, "partner", "Partnerschaft")
@@ -607,66 +820,140 @@ class TicketPanelView(discord.ui.View):
 class TicketControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-    @discord.ui.button(label="🔒 Ticket schließen", style=discord.ButtonStyle.red, custom_id="ticket_close_v2u")
+
+    @discord.ui.button(label="🙋 Ticket claimen", style=discord.ButtonStyle.green, custom_id="ticket_claim_v3")
+    async def claim_btn(self, interaction:discord.Interaction, button:discord.ui.Button):
+        if not is_staff_member(interaction.user):
+            return await interaction.response.send_message("❌ Nur Staff/Admin kann Tickets claimen.", ephemeral=True)
+        ok, info = await claim_ticket(interaction.channel.id, interaction.user.id)
+        if ok:
+            await interaction.response.send_message(f"✅ {interaction.user.mention} hat dieses Ticket übernommen.")
+            log_emb = make_embed(
+                "🙋 Ticket geclaimed",
+                f"Supporter: {interaction.user.mention}\nKanal: {interaction.channel.mention}",
+                0x2ecc71,
+                interaction.user
+            )
+            await send_log(bot, "ticket", log_emb, discord_id=interaction.user.id, channel_id=interaction.channel.id, meta="claimed=yes")
+        else:
+            if info == "closed":
+                txt = "❌ Dieses Ticket ist bereits geschlossen."
+            elif info == "not_found":
+                txt = "❌ Dieses Ticket ist nicht in der Datenbank registriert."
+            else:
+                txt = f"ℹ️ Dieses Ticket wurde bereits von <@{info}> übernommen."
+            await interaction.response.send_message(txt, ephemeral=True)
+
+    @discord.ui.button(label="🔒 Ticket schließen", style=discord.ButtonStyle.red, custom_id="ticket_close_v3")
     async def close_btn(self, interaction:discord.Interaction, button:discord.ui.Button):
+        row = await get_ticket_row(interaction.channel.id)
+        if not row:
+            return await interaction.response.send_message("❌ Ticketdaten nicht gefunden.", ephemeral=True)
+        try:
+            ticket_owner_id = row[1]
+        except Exception:
+            ticket_owner_id = row["user_id"]
+        if interaction.user.id != ticket_owner_id and not is_staff_member(interaction.user):
+            return await interaction.response.send_message("❌ Nur der Ticket-Ersteller oder Staff kann schließen.", ephemeral=True)
         await interaction.response.send_message(
             "**Ticket schließen – kurze Umfrage (3 Fragen)**\n\n**Frage 1/3:**\nHaben Sie etwas gekauft?",
-            view=SurveyQ1View(interaction.channel), ephemeral=False
+            view=SurveyQ1View(interaction.channel, ticket_owner_id, interaction.user.id),
+            ephemeral=False
         )
 
 class SurveyQ1View(discord.ui.View):
-    def __init__(self, ticket_channel):
+    def __init__(self, ticket_channel, ticket_owner_id:int, close_requested_by_id:int):
         super().__init__(timeout=180)
         self.ticket_channel = ticket_channel
+        self.ticket_owner_id = ticket_owner_id
+        self.close_requested_by_id = close_requested_by_id
+
+    async def guard(self, interaction:discord.Interaction):
+        if interaction.user.id != self.ticket_owner_id:
+            await interaction.response.send_message("❌ Nur der Ticket-Ersteller kann diese Umfrage beantworten.", ephemeral=True)
+            return False
+        return True
+
     @discord.ui.button(label="✅ Ja", style=discord.ButtonStyle.green)
     async def yes_btn(self, interaction:discord.Interaction, button:discord.ui.Button):
+        if not await self.guard(interaction):
+            return
         await interaction.response.edit_message(
             content="**Frage 2/3:**\nWas haben Sie gekauft?\nBitte wählen:",
-            view=SurveyQ2View(self.ticket_channel)
+            view=SurveyQ2View(self.ticket_channel, self.ticket_owner_id, self.close_requested_by_id)
         )
+
     @discord.ui.button(label="❌ Nein", style=discord.ButtonStyle.red)
     async def no_btn(self, interaction:discord.Interaction, button:discord.ui.Button):
+        if not await self.guard(interaction):
+            return
         await interaction.response.edit_message(content="Danke fürs Feedback! Ticket wird geschlossen …", view=None)
-        await close_ticket_final(self.ticket_channel, interaction.user, purchased=False)
+        await close_ticket_final(
+            self.ticket_channel,
+            interaction.user,
+            closed_by_id=self.close_requested_by_id,
+            purchased=False
+        )
 
 class SurveyQ2View(discord.ui.View):
-    def __init__(self, ticket_channel):
+    def __init__(self, ticket_channel, ticket_owner_id:int, close_requested_by_id:int):
         super().__init__(timeout=180)
         self.ticket_channel = ticket_channel
+        self.ticket_owner_id = ticket_owner_id
+        self.close_requested_by_id = close_requested_by_id
         for key, label, desc in SURVEY_PRODUCTS:
-            self.add_item(SurveyProductButton(key, label, self.ticket_channel))
+            self.add_item(SurveyProductButton(key, label, self.ticket_channel, self.ticket_owner_id, self.close_requested_by_id))
 
 class SurveyProductButton(discord.ui.Button):
-    def __init__(self, product_key, label, ticket_channel):
+    def __init__(self, product_key, label, ticket_channel, ticket_owner_id:int, close_requested_by_id:int):
         super().__init__(label=label, style=discord.ButtonStyle.secondary)
         self.product_key = product_key
         self.ticket_channel = ticket_channel
+        self.ticket_owner_id = ticket_owner_id
+        self.close_requested_by_id = close_requested_by_id
+
     async def callback(self, interaction:discord.Interaction):
+        if interaction.user.id != self.ticket_owner_id:
+            return await interaction.response.send_message("❌ Nur der Ticket-Ersteller kann diese Umfrage beantworten.", ephemeral=True)
         await interaction.response.edit_message(
-            content=f"**Frage 3/3:**\nWie bewerten Sie Ihren Einkauf / Support?\n\nAusgewählt: **{self.label}**\n\nBitte Sterne anklicken:",
-            view=SurveyQ3View(self.ticket_channel, self.product_key)
+            content=(
+                f"**Frage 3/3:**\nWie bewerten Sie Ihren Einkauf / Support?\n\n"
+                f"Ausgewählt: **{self.label}**\n\nBitte Sterne anklicken:"
+            ),
+            view=SurveyQ3View(self.ticket_channel, self.product_key, self.ticket_owner_id, self.close_requested_by_id)
         )
 
 class SurveyQ3View(discord.ui.View):
-    def __init__(self, ticket_channel, product_key):
+    def __init__(self, ticket_channel, product_key:str, ticket_owner_id:int, close_requested_by_id:int):
         super().__init__(timeout=180)
         self.ticket_channel = ticket_channel
         self.product_key = product_key
+        self.ticket_owner_id = ticket_owner_id
+        self.close_requested_by_id = close_requested_by_id
         labels = ["⭐","⭐⭐","⭐⭐⭐","⭐⭐⭐⭐","⭐⭐⭐⭐⭐"]
         for i in range(5):
-            self.add_item(StarButton(i+1, labels[i], ticket_channel, product_key))
+            self.add_item(StarButton(i+1, labels[i], ticket_channel, product_key, ticket_owner_id, close_requested_by_id))
 
 class StarButton(discord.ui.Button):
-    def __init__(self, stars:int, label:str, ticket_channel, product_key:str):
-        super().__init__(label=label, style=discord.ButtonStyle.green if stars>=4 else discord.ButtonStyle.secondary if stars==3 else discord.ButtonStyle.red)
-        self.stars=stars; self.ticket_channel=ticket_channel; self.product_key=product_key
+    def __init__(self, stars:int, label:str, ticket_channel, product_key:str, ticket_owner_id:int, close_requested_by_id:int):
+        super().__init__(label=label, style=discord.ButtonStyle.green if stars >= 4 else discord.ButtonStyle.secondary if stars == 3 else discord.ButtonStyle.red)
+        self.stars = stars
+        self.ticket_channel = ticket_channel
+        self.product_key = product_key
+        self.ticket_owner_id = ticket_owner_id
+        self.close_requested_by_id = close_requested_by_id
+
     async def callback(self, interaction:discord.Interaction):
+        if interaction.user.id != self.ticket_owner_id:
+            return await interaction.response.send_message("❌ Nur der Ticket-Ersteller kann diese Umfrage beantworten.", ephemeral=True)
         user = interaction.user
         try:
             async with get_db() as db:
-                await db_execute(db,
+                await db_execute(
+                    db,
                     "INSERT INTO vouches(discord_id,stars,message,coins_awarded,product) VALUES(?,?,?,?,?)",
-                    (user.id, self.stars, f"Ticket Survey – {self.product_key}", 0, self.product_key))
+                    (user.id, self.stars, f"Ticket Survey – {self.product_key}", 0, self.product_key)
+                )
                 await db_commit(db)
             if self.stars == 5:
                 await add_coins(user.id, COIN_REWARDS["vouch_5star"], "vouch_5star", self.product_key)
@@ -674,48 +961,104 @@ class StarButton(discord.ui.Button):
             else:
                 coin_txt = ""
         except Exception as e:
-            print(f"[survey] {e}"); coin_txt=""
+            print(f"[survey] {e}")
+            coin_txt = ""
         await interaction.response.edit_message(
-            content=f"Vielen Dank für Ihre **{self.stars} ⭐ Bewertung** zu **{self.product_key}**!{coin_txt}\n\nTicket wird in 5 Sekunden geschlossen …",
+            content=(
+                f"Vielen Dank für Ihre **{self.stars} ⭐ Bewertung** zu **{product_label(self.product_key)}**!"
+                f"{coin_txt}\n\nTicket wird in 5 Sekunden geschlossen …"
+            ),
             view=None
         )
         try:
-            log_emb = make_embed("⭐ Ticket Bewertung",
-                f"{user.mention}\nProdukt: **{self.product_key}**\nBewertung: **{'⭐'*self.stars} ({self.stars}/5)**\nKanal: {self.ticket_channel.mention}",
-                0xFFD700, user)
-            await send_log(bot, "ticket", log_emb, discord_id=user.id, channel_id=self.ticket_channel.id,
-                meta=f"stars={self.stars};product={self.product_key}")
-            # staff stats ++
-            async with get_db() as db:
-                # naive: increase closed count for closer? skip – owner dashboard will show
-                pass
-        except: pass
+            log_emb = make_embed(
+                "⭐ Ticket Bewertung",
+                f"{user.mention}\nProdukt: **{product_label(self.product_key)}**\nBewertung: **{'⭐' * self.stars} ({self.stars}/5)**\nKanal: {self.ticket_channel.mention}",
+                0xFFD700,
+                user
+            )
+            await send_log(
+                bot,
+                "ticket",
+                log_emb,
+                discord_id=user.id,
+                channel_id=self.ticket_channel.id,
+                meta=f"stars={self.stars};product={self.product_key}"
+            )
+        except Exception:
+            pass
         await asyncio.sleep(5)
-        await close_ticket_final(self.ticket_channel, user, purchased=True, product=self.product_key, stars=self.stars)
+        await close_ticket_final(
+            self.ticket_channel,
+            user,
+            closed_by_id=self.close_requested_by_id,
+            purchased=True,
+            product=self.product_key,
+            stars=self.stars
+        )
 
-async def close_ticket_final(channel:discord.TextChannel, closer:discord.Member, purchased:bool=False, product:str=None, stars:int=None):
+async def close_ticket_final(channel:discord.TextChannel, feedback_user:discord.Member, closed_by_id:int=None, purchased:bool=False, product:str=None, stars:int=None):
     try:
+        row = await get_ticket_row(channel.id)
+        owner_id = None
+        if row:
+            try:
+                owner_id = row[1]
+            except Exception:
+                owner_id = row["user_id"]
+        real_closer = channel.guild.get_member(closed_by_id) if closed_by_id else feedback_user
+        if real_closer is None:
+            real_closer = feedback_user
+        await finalize_ticket_metrics(channel.id, real_closer.id, stars=stars, product=product)
         await ticket_close_db(channel.id)
-        txt = f"Ticket {channel.mention} geschlossen von {closer.mention}\n"
+        txt = f"Ticket {channel.mention} geschlossen von {real_closer.mention}\n"
+        txt += f"Feedback von: {feedback_user.mention}\n"
         if purchased:
-            txt += f"Gekauft: {product or 'ja'}\n"
-            if stars: txt += f"Bewertung: {stars}⭐\n"
+            txt += f"Gekauft: {product_label(product or 'ja')}\n"
+            if stars:
+                txt += f"Bewertung: {stars}⭐\n"
         else:
             txt += "Kein Kauf"
-        emb = make_embed("🎫 Ticket geschlossen", txt, 0x95a5a6, closer)
-        await send_log(bot, "ticket", emb, discord_id=closer.id, channel_id=channel.id)
+        emb = make_embed("🎫 Ticket geschlossen", txt, 0x95a5a6, real_closer)
+        await send_log(bot, "ticket", emb, discord_id=real_closer.id, channel_id=channel.id, meta=f"purchased={purchased};product={product};stars={stars}")
+        if purchased and owner_id and L("ticker"):
+            buyer = channel.guild.get_member(owner_id)
+            if buyer:
+                ch = bot.get_channel(L("ticker"))
+                if ch:
+                    tick = discord.Embed(
+                        title="🎉 Kauf-Ticket erfolgreich abgeschlossen!",
+                        description=f"**{buyer.mention}** hat soeben **{product_label(product or 'Produkt')}** abgeschlossen. Vielen Dank! ❤️",
+                        color=0xFFD700,
+                        timestamp=datetime.datetime.utcnow()
+                    )
+                    try:
+                        tick.set_thumbnail(url=buyer.display_avatar.url)
+                    except Exception:
+                        pass
+                    tick.set_footer(text="Void_Shop • Live Käufe • FOMO")
+                    try:
+                        await ch.send(embed=tick)
+                    except Exception as e:
+                        print(f"[ticket ticker] {e}")
+        try:
+            await update_stats_channels(channel.guild)
+        except Exception:
+            pass
         await asyncio.sleep(3)
-        await channel.delete(reason=f"Ticket closed by {closer} – survey completed")
+        await channel.delete(reason=f"Ticket closed by {real_closer} – survey completed")
     except Exception as e:
         print(f"[close_ticket] {e}")
-        try: await channel.send(f"⚠️ Fehler beim Schließen: {e}")
-        except: pass
+        try:
+            await channel.send(f"⚠️ Fehler beim Schließen: {e}")
+        except Exception:
+            pass
 
 # ---------- VERIFY ----------
 class OneClickVerifyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-    @discord.ui.button(label="✅ Verifizieren – 1 Klick", style=discord.ButtonStyle.green, custom_id="oneclick_verify_v2u", emoji="🔓")
+    @discord.ui.button(label="✅ Discord-Zugang freischalten", style=discord.ButtonStyle.green, custom_id="oneclick_verify_v2u", emoji="🔓")
     async def verify_btn(self, interaction:discord.Interaction, button:discord.ui.Button):
         guild = interaction.guild; user = interaction.user
         member_role_id = ROL("member") or ROL("verified")
@@ -723,16 +1066,18 @@ class OneClickVerifyView(discord.ui.View):
         try:
             if member_role_id:
                 mr = guild.get_role(member_role_id)
-                if mr: await user.add_roles(mr, reason="One-Click Verify")
+                if mr: await user.add_roles(mr, reason="Discord Access Verify")
             if unverified_id:
                 ur = guild.get_role(unverified_id)
                 if ur and ur in user.roles:
-                    await user.remove_roles(ur, reason="Verified")
+                    await user.remove_roles(ur, reason="Discord access granted")
             await add_coins(user.id, COIN_REWARDS["verify"], "verify_oneclick")
             await interaction.response.send_message(
-                f"✅ Erfolgreich verifiziert, {user.mention}!\nWillkommen bei **Void Shop**!\n+{COIN_REWARDS['verify']} Coins gutgeschrieben.",
+                f"✅ Server-Zugang freigeschaltet, {user.mention}!\n+{COIN_REWARDS['verify']} Coins gutgeschrieben.\n\n🔐 **Für Roblox-Käufe und 100 % Identitätsprüfung nutze zusätzlich:** `!verify DeinRobloxName`",
                 ephemeral=True
             )
+            log_emb = make_embed("🔓 Discord-Zugang freigeschaltet", f"{user.mention} hat den Serverzugang per 1-Klick freigeschaltet.\nHinweis: Roblox-Shop-Verify bleibt `!verify Name`.", 0x2ecc71, user)
+            await send_log(bot, "verify", log_emb, discord_id=user.id)
             # welcome embed in welcome channel
             wc_id = C("welcome")
             if wc_id:
@@ -740,7 +1085,7 @@ class OneClickVerifyView(discord.ui.View):
                 if ch:
                     w = discord.Embed(
                         title=f"Willkommen {user.display_name}!",
-                        description=f"🎉 **Herzlich Willkommen bei Void Shop**, {user.mention}!\n\nSchön dass du da bist ❤️\n\n🛍️ Schau in <#{(C('products') or C('general') or ch.id)}> vorbei\n💬 Support: Ticket-System\n🪙 Sammle Void-Coins!\n\n**Viel Spaß!**",
+                        description=f"🎉 **Herzlich Willkommen bei Void Shop**, {user.mention}!\n\nSchön dass du da bist ❤️\n\n🛍️ Schau in <#{(C('products') or C('general') or ch.id)}> vorbei\n💬 Support: Ticket-System\n🪙 Sammle Void-Coins!\n🔐 Für Shop-Käufe: `!verify DeinRobloxName`\n\n**Viel Spaß!**",
                         color=0x2ecc71, timestamp=datetime.datetime.utcnow()
                     )
                     try:
@@ -750,7 +1095,10 @@ class OneClickVerifyView(discord.ui.View):
                     try: await ch.send(content=user.mention, embed=w)
                     except: pass
         except Exception as e:
-            await interaction.response.send_message(f"⚠️ Fehler: {e}", ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(f"⚠️ Fehler: {e}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"⚠️ Fehler: {e}", ephemeral=True)
 
 class VerifyView(discord.ui.View):
     def __init__(self, discord_id, roblox_id, roblox_name, code):
@@ -905,115 +1253,173 @@ CHANNELS_SETUP = [
 ]
 
 LOG_CHANNEL_DEFS = [
-    ("📥・join-leave","join"),
+    ("📥・join-logs","join"),
+    ("📤・leave-logs","leave"),
     ("🎙️・voice-logs","voice"),
     ("💬・message-logs","message"),
+    ("🔗・invite-logs","invite"),
     ("🛍️・shop-logs","shop"),
     ("🔐・verify-logs","verify"),
     ("🚨・antiscam-logs","antiscam"),
     ("🎫・ticket-logs","ticket"),
     ("🪙・coin-logs","coins"),
     ("⚙️・mod-logs","mod"),
+    ("🏗️・system-logs","system"),
     ("📈・live-käufe","ticker"),
     ("🔧・bot-logs","bot"),
     ("👑・owner-logs","owner"),
 ]
 
-@bot.command(name="start")
-@commands.has_permissions(administrator=True)
-async def start_cmd(ctx):
-    if OWNER_ID and ctx.author.id != OWNER_ID and not ctx.author.guild_permissions.administrator:
-        return await ctx.send("❌ Nur Server-Owner / Admin.")
-    msg = await ctx.send("🚀 **Void_Shop v2 ULTIMATE Setup startet…**\nErstelle ~37 Rollen, ~30 Kanäle, 12 Log-Kanäle, Ticket-System, Stats …\nDas dauert 40-90 Sekunden.")
-    guild = ctx.guild
+def reset_runtime_state():
+    for key in list(RUNTIME.keys()):
+        if key.startswith("log_") or key.startswith("role_") or key.startswith("stat_") or key in {
+            "welcome", "goodbye", "rules", "announcements", "verify", "how_to_buy", "fastflags",
+            "products", "vouches", "media", "general", "bot_commands", "ticket_create", "ticker"
+        }:
+            RUNTIME[key] = 0
+
+async def wipe_managed_server(guild:discord.Guild, status_message=None):
+    deleted = {"roles":0, "channels":0, "categories":0}
+    managed_category_names = {name for name, _ in CHANNELS_SETUP} | {"📊 LOGS", "📊 STATS"}
+    managed_channel_names = {name for _, channels in CHANNELS_SETUP for name, _, _ in channels}
+    managed_channel_names.update({name for name, _ in LOG_CHANNEL_DEFS})
+    managed_role_names = {name for name, *_ in ROLE_DEFS}
+    runtime_ids = {value for value in RUNTIME.values() if isinstance(value, int) and value}
+    if status_message:
+        try:
+            await status_message.edit(content="♻️ **Reset-Modus aktiv** – lösche vorhandene VOID-Struktur …")
+        except Exception:
+            pass
+    channels = sorted(list(guild.channels), key=lambda c: getattr(c, "position", 0), reverse=True)
+    for ch in channels:
+        cat_name = ch.category.name if getattr(ch, "category", None) else ""
+        should_delete = ch.id in runtime_ids or ch.name in managed_channel_names or cat_name in {"📊 LOGS", "📊 STATS"}
+        if should_delete:
+            try:
+                await ch.delete(reason="Void_Shop Komplett neu aufsetzen")
+                deleted["channels"] += 1
+                await asyncio.sleep(0.35)
+            except Exception as e:
+                print(f"[RESET channel] {ch} {e}")
+    for cat in list(guild.categories):
+        if cat.name in managed_category_names:
+            try:
+                await cat.delete(reason="Void_Shop Komplett neu aufsetzen")
+                deleted["categories"] += 1
+                await asyncio.sleep(0.35)
+            except Exception as e:
+                print(f"[RESET category] {cat} {e}")
+    for role in sorted(list(guild.roles), key=lambda r: r.position, reverse=True):
+        if role.is_default() or role.managed:
+            continue
+        if role.name in managed_role_names:
+            try:
+                await role.delete(reason="Void_Shop Komplett neu aufsetzen")
+                deleted["roles"] += 1
+                await asyncio.sleep(0.35)
+            except Exception as e:
+                print(f"[RESET role] {role} {e}")
+    reset_runtime_state()
+    save_runtime()
+    return deleted
+
+async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status_message, mode:str="add"):
     created = {"roles":0,"channels":0,"categories":0}
-    # 1 ROLLEN
-    await msg.edit(content="🚀 **1/7 Rollen erstellen (37) …**")
+    deleted = {"roles":0,"channels":0,"categories":0}
+    if mode == "reset":
+        deleted = await wipe_managed_server(guild, status_message)
+    await status_message.edit(content="🚀 **1/7 Rollen erstellen / prüfen …**")
     existing_roles = {r.name:r for r in guild.roles}
     for name,rgb,hoist,mentionable in reversed(ROLE_DEFS):
         if name in existing_roles:
             role = existing_roles[name]
         else:
             try:
-                role = await guild.create_role(name=name, colour=discord.Colour.from_rgb(*rgb),
-                    hoist=hoist, mentionable=mentionable, reason="Void_Shop v2 Setup")
-                created["roles"]+=1
+                role = await guild.create_role(name=name, colour=discord.Colour.from_rgb(*rgb), hoist=hoist, mentionable=mentionable, reason="Void_Shop v2 Setup")
+                created["roles"] += 1
                 await asyncio.sleep(0.35)
             except Exception as e:
-                print(f"[ROLE] {name}: {e}"); continue
-        lname=name.lower()
-        if "unverifiziert" in lname: RUNTIME["role_unverified"]=role.id
-        if "✅ verifiziert" in lname.lower(): RUNTIME["role_verified"]=role.id
-        if name=="👤 Member": RUNTIME["role_member"]=role.id
-        if name=="🛒 Kunde": RUNTIME["role_customer"]=role.id
-        if "vip kunde" in lname: RUNTIME["role_vip"]=role.id
-        if "booster" in lname and "🎁" in name: RUNTIME["role_booster"]=role.id
-        if name=="🎫 Supporter": RUNTIME["role_staff"]=role.id
-        if name=="⚡ Admin": RUNTIME["role_admin"]=role.id
-        if name=="👑 Owner": RUNTIME["role_owner"]=role.id
-    # 2 KATEGORIEN + KANÄLE
-    await msg.edit(content=f"🚀 **2/7 Kanäle erstellen (~30) …** Rollen: {created['roles']}")
+                print(f"[ROLE] {name}: {e}")
+                continue
+        lname = name.lower()
+        if "unverifiziert" in lname: RUNTIME["role_unverified"] = role.id
+        if name == "✅ Verifiziert": RUNTIME["role_verified"] = role.id
+        if name == "👤 Member": RUNTIME["role_member"] = role.id
+        if name == "🛒 Kunde": RUNTIME["role_customer"] = role.id
+        if "vip kunde" in lname: RUNTIME["role_vip"] = role.id
+        if name == "🎁 Booster": RUNTIME["role_booster"] = role.id
+        if name == "🎫 Supporter": RUNTIME["role_staff"] = role.id
+        if name == "🔧 Head-Staff": RUNTIME["role_head_staff"] = role.id
+        if name == "🛡️ Moderator": RUNTIME["role_moderator"] = role.id
+        if name == "🧰 Trial-Supporter": RUNTIME["role_trial_supporter"] = role.id
+        if name == "⚡ Admin": RUNTIME["role_admin"] = role.id
+        if name == "👑 Owner": RUNTIME["role_owner"] = role.id
+
+    await status_message.edit(content=f"🚀 **2/7 Kanäle erstellen / prüfen …** Rollen neu: {created['roles']}")
     async def get_cat(name):
         c = discord.utils.get(guild.categories, name=name)
-        if c: return c
+        if c:
+            return c
         try:
             c = await guild.create_category(name, reason="Void_Shop v2")
-            created["categories"]+=1
-            await asyncio.sleep(0.5)
+            created["categories"] += 1
+            await asyncio.sleep(0.45)
             return c
         except Exception as e:
-            print(e); return None
+            print(f"[CATEGORY] {name}: {e}")
+            return None
+
     for cat_name, channels in CHANNELS_SETUP:
         cat = await get_cat(cat_name)
         for ch_name, ch_type, topic in channels:
             ch = discord.utils.get(guild.channels, name=ch_name)
             if not ch:
                 try:
-                    if ch_type=="voice":
+                    if ch_type == "voice":
                         ch = await guild.create_voice_channel(ch_name, category=cat, reason="Void_Shop v2")
                     else:
                         ch = await guild.create_text_channel(ch_name, category=cat, topic=topic[:1024] if topic else None, reason="Void_Shop v2")
-                    created["channels"]+=1
-                    await asyncio.sleep(0.45)
+                    created["channels"] += 1
+                    await asyncio.sleep(0.35)
                 except Exception as e:
-                    print(f"[CH] {ch_name} {e}"); continue
-            n=ch_name.lower()
-            if "willkommen" in n: RUNTIME["welcome"]=ch.id
-            if "wiedersehen" in n or "auf-wiedersehen" in n: RUNTIME["goodbye"]=ch.id
-            if "regeln" in n: RUNTIME["rules"]=ch.id
-            if "ankündigung" in n: RUNTIME["announcements"]=ch.id
-            if n.startswith("✅") and "verify" in n: RUNTIME["verify"]=ch.id
-            if "how-to-buy" in n: RUNTIME["how_to_buy"]=ch.id
-            if "fastflags" in n and ch.type==discord.ChannelType.text and not RUNTIME.get("fastflags"): RUNTIME["fastflags"]=ch.id
-            if "produkte" in n: RUNTIME["products"]=ch.id
-            if "vouches" in n: RUNTIME["vouches"]=ch.id
-            if "bot-commands" in n: RUNTIME["bot_commands"]=ch.id
-            if "ticket-erstellen" in n: RUNTIME["ticket_create"]=ch.id
-            if "allgemein" in n and not RUNTIME.get("general"): RUNTIME["general"]=ch.id
-            if "media" in n: RUNTIME["media"]=ch.id
-    # 3 LOGS
-    await msg.edit(content=f"🚀 **3/7 LogSystem – 12 Kanäle …**")
+                    print(f"[CH] {ch_name} {e}")
+                    continue
+            n = ch_name.lower()
+            if "willkommen" in n: RUNTIME["welcome"] = ch.id
+            if "wiedersehen" in n or "auf-wiedersehen" in n: RUNTIME["goodbye"] = ch.id
+            if "regeln" in n: RUNTIME["rules"] = ch.id
+            if "ankündigung" in n: RUNTIME["announcements"] = ch.id
+            if n.startswith("✅") and "verify" in n: RUNTIME["verify"] = ch.id
+            if "how-to-buy" in n: RUNTIME["how_to_buy"] = ch.id
+            if "fastflags" in n and ch.type == discord.ChannelType.text and not RUNTIME.get("fastflags"): RUNTIME["fastflags"] = ch.id
+            if "produkte" in n: RUNTIME["products"] = ch.id
+            if "vouches" in n: RUNTIME["vouches"] = ch.id
+            if "bot-commands" in n: RUNTIME["bot_commands"] = ch.id
+            if "ticket-erstellen" in n: RUNTIME["ticket_create"] = ch.id
+            if "allgemein" in n and not RUNTIME.get("general"): RUNTIME["general"] = ch.id
+            if "media" in n: RUNTIME["media"] = ch.id
+
+    await status_message.edit(content=f"🚀 **3/7 LogSystem – {len(LOG_CHANNEL_DEFS)} Spezial-Kanäle …**")
     log_cat = await get_cat("📊 LOGS")
     for ch_name, key in LOG_CHANNEL_DEFS:
         ch = discord.utils.get(guild.text_channels, name=ch_name)
         if not ch:
             try:
                 overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
-                # staff sehen logs
-                for rk in ["role_staff","role_admin","role_owner"]:
-                    rid = RUNTIME.get(rk)
-                    if rid:
-                        r = guild.get_role(rid)
-                        if r: overwrites[r]=discord.PermissionOverwrite(view_channel=True, read_message_history=True)
+                for role in guild.roles:
+                    if role.id in staff_role_ids():
+                        overwrites[role] = discord.PermissionOverwrite(view_channel=True, read_message_history=True)
                 ch = await guild.create_text_channel(ch_name, category=log_cat, overwrites=overwrites, reason="Void_Shop Logs")
-                created["channels"]+=1
-                await asyncio.sleep(0.45)
+                created["channels"] += 1
+                await asyncio.sleep(0.35)
             except Exception as e:
-                print(f"[LOG] {e}"); continue
-        RUNTIME[f"log_{key}"]=ch.id
-        if key=="ticker": RUNTIME["ticker"]=ch.id
-    # 4 STATS
-    await msg.edit(content="🚀 **4/7 Stats-Kanäle …**")
+                print(f"[LOG] {e}")
+                continue
+        RUNTIME[f"log_{key}"] = ch.id
+        if key == "ticker":
+            RUNTIME["ticker"] = ch.id
+
+    await status_message.edit(content="🚀 **4/7 Stats-Kanäle …**")
     stats_cat = await get_cat("📊 STATS")
     stats_defs = [
         ("👥・Mitglieder: 0","stat_members"),
@@ -1025,40 +1431,46 @@ async def start_cmd(ctx):
         found = None
         for vc in guild.voice_channels:
             if vc.category_id == (stats_cat.id if stats_cat else None) and name.split("・")[0] in vc.name:
-                found=vc; break
-        if found: ch=found
+                found = vc
+                break
+        if found:
+            ch = found
         else:
             try:
-                overwrites={guild.default_role: discord.PermissionOverwrite(connect=False, view_channel=True)}
+                overwrites = {guild.default_role: discord.PermissionOverwrite(connect=False, view_channel=True)}
                 ch = await guild.create_voice_channel(name, category=stats_cat, overwrites=overwrites, reason="Void_Shop Stats")
-                created["channels"]+=1
-                await asyncio.sleep(0.45)
+                created["channels"] += 1
+                await asyncio.sleep(0.35)
             except Exception as e:
-                print(f"[STATS] {e}"); continue
-        RUNTIME[rkey]=ch.id
-    # 5 Permissions
-    await msg.edit(content="🚀 **5/7 Permissions …**")
-    # Unverified bekommt nur verify+regeln+willkommen
-    # Vereinfacht: wir lassen es, da komplex über viele Kanäle – manuell feintunen
-    # 6 PANELS
-    await msg.edit(content="🚀 **6/7 Panels posten …**")
+                print(f"[STATS] {e}")
+                continue
+        RUNTIME[rkey] = ch.id
+
+    await status_message.edit(content="🚀 **5/7 Berechtigungen & Security-Hinweise …**")
+    # Feintuning der Channel-Permissions kann pro Server individuell nachgezogen werden.
+
+    await status_message.edit(content="🚀 **6/7 Panels posten / aktualisieren …**")
     async def post_panel(channel_id, embed, view=None):
-        if not channel_id: return
+        if not channel_id:
+            return
         ch = guild.get_channel(channel_id)
         if not ch:
-            try: ch = await bot.fetch_channel(channel_id)
-            except: return
+            try:
+                ch = await bot.fetch_channel(channel_id)
+            except Exception:
+                return
         try:
             async for m in ch.history(limit=8):
                 if m.author.id == bot.user.id and m.embeds:
                     return
-        except: pass
+        except Exception:
+            pass
         try:
             await ch.send(embed=embed, view=view)
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(0.5)
         except Exception as e:
             print(f"[PANEL] {e}")
-    # Welcome
+
     if C("welcome"):
         emb = discord.Embed(
             title="💎 Herzlich Willkommen bei Void Shop! 💎",
@@ -1070,19 +1482,21 @@ async def start_cmd(ctx):
                 "• 👕 T-Shirt Template\n"
                 "• 🛡️ Anti Alt Ban\n\n"
                 "**🚀 Starte so:**\n"
-                f"1️⃣ Gehe zu <#{C('verify') or C('bot_commands') or ctx.channel.id}>\n"
-                "2️⃣ Verifiziere dich mit 1 Klick\n"
-                "3️⃣ Nutze `!products` & `!checkbuy`\n\n"
+                f"1️⃣ Öffne <#{C('verify') or C('bot_commands') or status_message.channel.id}>\n"
+                "2️⃣ Schalte den Discord-Zugang frei\n"
+                "3️⃣ Nutze `!verify RobloxName` für Bulletproof Bio-Code-Auth\n"
+                "4️⃣ Danach kaufen → `!checkbuy` → Auto-Delivery\n\n"
                 "**💬 Support:** Ticket-System\n"
-                "**🪙 Treue:** Sammle Void-Coins!\n\n"
+                "**🪙 Treue:** Sammle Void-Coins + Invite-Rewards!\n\n"
                 "*Danke dass du Teil der Void Community bist!* ❤️"
             ),
             color=0xFF2020
         )
-        if guild.icon: emb.set_thumbnail(url=guild.icon.url)
-        emb.set_footer(text="Void_Shop • by RealVexo696 • discord.gg/voidv2")
+        if guild.icon:
+            emb.set_thumbnail(url=guild.icon.url)
+        emb.set_footer(text="Void_Shop • Bio-Verify • Auto-Delivery • Dashboard")
         await post_panel(C("welcome"), emb)
-    # Regeln
+
     if C("rules"):
         emb = discord.Embed(title="📜 Void_Shop Regeln", description=(
             "**1️⃣ Respekt** – Kein Toxic, Rassismus, Beleidigungen\n"
@@ -1092,41 +1506,48 @@ async def start_cmd(ctx):
             "**5️⃣ Keine Weitergabe** von gekauften Produkten\n"
             "**6️⃣ Deutsch / English**\n"
             "**7️⃣ Folge Discord & Roblox ToS**\n\n"
-            "✅ Mit dem Verifizieren akzeptierst du die Regeln."
+            "✅ Mit dem Freischalten akzeptierst du die Regeln."
         ), color=0xe74c3c)
         await post_panel(C("rules"), emb)
-    # Verify
+
     if C("verify"):
-        emb = discord.Embed(title="🔐 Verifizierung",
+        emb = discord.Embed(
+            title="🔐 Verifizierung & Shop-Freischaltung",
             description=(
-                "**Willkommen bei Void_Shop!**\n\n"
-                "Klicke unten auf **✅ Verifizieren** um Zugang zu erhalten.\n\n"
-                "Du bekommst:\n"
-                "• ✅ Member Rolle\n"
-                "• 🛍️ Shop Zugang\n"
-                "• 🪙 +10 Void-Coins\n"
-                "• 🎫 Ticket-System\n\n"
-                "*Optional: `!verify DeinRobloxName` für Bulletproof Roblox Bio-Code-Auth*"
-            ), color=0x2ecc71)
-        # persistente View registrieren
-        try: bot.add_view(OneClickVerifyView())
-        except: pass
+                "**Schritt 1 – Discord-Zugang**\n"
+                "Klicke unten auf **Discord-Zugang freischalten** für Serverzugang +10 Coins.\n\n"
+                "**Schritt 2 – Bulletproof Roblox-Verify**\n"
+                "Nutze `!verify DeinRobloxName` im Bot-Channel.\n"
+                "Du erhältst einen Sicherheitscode wie `void-8392`, trägst ihn kurz in deine Roblox-Bio ein und klickst anschließend auf **Bestätigen**.\n\n"
+                "**Danach möglich:**\n"
+                "• `!checkbuy` → Kaufprüfung\n"
+                "• Auto-Delivery per DM in unter 5 Sekunden\n"
+                "• sichere Roblox-Identität ohne Fake-Namen"
+            ),
+            color=0x2ecc71
+        )
+        try:
+            bot.add_view(OneClickVerifyView())
+        except Exception:
+            pass
         await post_panel(C("verify"), emb, OneClickVerifyView())
-    # How to Buy
+
     if C("how_to_buy"):
         emb = discord.Embed(title="🛒 How to Buy – So kaufst du", description=(
-            "**1️⃣ Produkt wählen**\n"
-            f"`!products` in <#{C('bot_commands') or C('general') or ctx.channel.id}>\n\n"
-            "**2️⃣ Roblox Gamepass kaufen**\n"
+            "**1️⃣ Bulletproof verifizieren**\n"
+            "`!verify DeinRobloxName`\n\n"
+            "**2️⃣ Produkt wählen**\n"
+            f"`!products` in <#{C('bot_commands') or C('general') or status_message.channel.id}>\n\n"
+            "**3️⃣ Roblox Gamepass kaufen**\n"
             "Link via Ticket / DM\n\n"
-            "**3️⃣ `!checkbuy` ausführen**\n"
-            "Bot prüft Gamepass automatisch\n\n"
-            "**4️⃣ Auto-Delivery <5 Sekunden**\n"
-            "DM mit Download-Links!\n\n"
+            "**4️⃣ `!checkbuy` ausführen**\n"
+            "Bot prüft den Kauf automatisch\n\n"
+            "**5️⃣ Auto-Delivery < 5 Sekunden**\n"
+            "DM mit Download-Links / Dateien\n\n"
             "❓ Fragen? → Ticket öffnen!"
         ), color=0xFFD700)
         await post_panel(C("how_to_buy"), emb)
-    # FastFlags
+
     ffid = C("fastflags")
     if ffid:
         emb = discord.Embed(title="⚡ FastFlags – Info", description=(
@@ -1139,65 +1560,145 @@ async def start_cmd(ctx):
             "• **Sky** – 180 R$\n"
             "• **T-Shirt Template** – 120 R$\n"
             "• **Anti Alt Ban** – 399 R$\n\n"
-            "`!products` → kaufen → `!checkbuy` → Auto-Delivery <5s"
+            "`!verify` → kaufen → `!checkbuy` → Auto-Delivery <5s"
         ), color=0xff8800)
         await post_panel(ffid, emb)
-    # Ticket
+
     if C("ticket_create"):
-        emb = discord.Embed(title="🎫 Void_Shop Support – Ticket erstellen",
-            description=(
-                "Wähle unten dein Anliegen:\n\n"
-                "**🛒 Produkt kaufen**\n"
-                "→ Kaufberatung, Produktfragen\n\n"
-                "**💬 Allgemeiner Support**\n"
-                "→ Technik, Fragen, Hilfe\n\n"
-                "**🤝 Partnerschaft**\n"
-                "→ Kooperationen, Resell\n\n"
-                "*Antwortzeit: meist <15 Minuten*"
-            ), color=0x1abc9c)
-        emb.set_footer(text="Void_Shop Ticket • Close = 3-Fragen Survey + ⭐ Bewertung")
-        try: bot.add_view(TicketPanelView()); bot.add_view(TicketControlView())
-        except: pass
+        emb = discord.Embed(title="🎫 Void_Shop Support – Ticket erstellen", description=(
+            "Wähle unten dein Anliegen:\n\n"
+            "**🛒 Produkt kaufen**\n"
+            "→ Kaufberatung, Produktfragen\n\n"
+            "**💬 Allgemeiner Support**\n"
+            "→ Technik, Fragen, Hilfe\n\n"
+            "**🤝 Partnerschaft**\n"
+            "→ Kooperationen, Resell\n\n"
+            "*Antwortzeit, Claims und Bewertungen werden jetzt direkt fürs Dashboard getrackt.*"
+        ), color=0x1abc9c)
+        emb.set_footer(text="Void_Shop Ticket • Claim • 3-Fragen Survey • Staff Leaderboard")
+        try:
+            bot.add_view(TicketPanelView())
+            bot.add_view(TicketControlView())
+        except Exception:
+            pass
         await post_panel(C("ticket_create"), emb, TicketPanelView())
-    # 7 save + stats
-    await msg.edit(content="🚀 **7/7 Speichern & Stats initialisieren …**")
+
+    await status_message.edit(content="🚀 **7/7 Speichern, Invite-Cache & Stats initialisieren …**")
     save_runtime()
     try:
+        await refresh_invite_cache(guild)
+    except Exception:
+        pass
+    try:
         await update_stats_channels(guild)
-    except Exception as e: print(e)
-    # done
+    except Exception as e:
+        print(e)
+
     emb_done = discord.Embed(
-        title="✅ Void_Shop v2 ULTIMATE Setup abgeschlossen!",
+        title="✅ Void_Shop Setup abgeschlossen!",
         description=(
-            f"**Erstellt:**\n"
-            f"• Rollen: **{created['roles']}** neu (insg. ~37)\n"
-            f"• Kanäle: **{created['channels']}** neu\n"
+            f"**Modus:** {'Komplett neu aufgesetzt' if mode == 'reset' else 'Nur fehlende Elemente hinzugefügt'}\n\n"
+            f"**Neu erstellt:**\n"
+            f"• Rollen: **{created['roles']}**\n"
+            f"• Kanäle: **{created['channels']}**\n"
             f"• Kategorien: **{created['categories']}**\n\n"
-            "**Enthalten:**\n"
-            "🛍️ Auto-Delivery • 🔐 Bio-Code-Auth + One-Click Verify\n"
-            "🚨 AntiScam • 📈 FOMO Ticker • 🪙 Void-Coins\n"
-            "🎫 Ticket-System: Produkt kaufen / Support / Partnerschaft\n"
-            "→ Close Survey: 3 Fragen + ⭐⭐⭐⭐⭐ Buttons\n"
-            "📜 12 Log-Kanäle • 📊 Live Stats\n"
-            "👑 Web Dashboard: http://localhost:5000\n\n"
-            "**Commands:**\n"
-            "`!verify` `!checkbuy` `!products` `!coins` `!shop` `!redeem` `!daily` `!coinlb` `!revenue` `!stafflb`\n\n"
-            "*Danke dass du Void_Shop nutzt!* ❤️"
+            f"**Beim Reset entfernt:**\n"
+            f"• Rollen: **{deleted['roles']}**\n"
+            f"• Kanäle: **{deleted['channels']}**\n"
+            f"• Kategorien: **{deleted['categories']}**\n\n"
+            "**Aktiv:**\n"
+            "🛍️ Auto-Delivery • 🔐 Bio-Code-Auth • 🚨 AntiScam\n"
+            "📈 Live-Käufe Ticker • 🪙 Void-Coins + Invite-Rewards\n"
+            "🎫 Ticket-Claim + Supporter-Leaderboard\n"
+            f"📜 {len(LOG_CHANNEL_DEFS)} Log-Kanäle • 📊 Live Stats\n"
+            f"👑 Dashboard: http://localhost:{DASHBOARD_PORT}\n\n"
+            "**Kommandos:**\n"
+            "`!verify` `!checkbuy` `!products` `!coins` `!shop` `!redeem` `!daily`\n\n"
+            "*Owner-Daten wie Revenue / Staff / Logs sind jetzt direkt im Dashboard sichtbar.*"
         ),
         color=0x2ecc71
     )
     emb_done.set_footer(text="Void_Shop v2.0 ULTIMATE • RealVexo696")
-    await ctx.send(embed=emb_done)
-    try: await msg.delete()
-    except: pass
-    # log
+    if guild.system_channel:
+        await guild.system_channel.send(embed=emb_done)
+    else:
+        await status_message.channel.send(embed=emb_done)
     try:
-        log_emb = make_embed("👑 Server Setup v2 abgeschlossen",
-            f"Admin: {ctx.author.mention}\nRollen: {created['roles']}\nKanäle: {created['channels']}\nKategorien: {created['categories']}",
-            0x2ecc71, ctx.author)
-        await send_log(bot, "owner", log_emb, discord_id=ctx.author.id)
-        await send_log(bot, "bot", log_emb, discord_id=ctx.author.id)
-    except: pass
+        log_emb = make_embed(
+            "👑 Server Setup abgeschlossen",
+            f"Admin: {actor.mention}\nModus: **{mode}**\nRollen neu: {created['roles']}\nKanäle neu: {created['channels']}\nKategorien neu: {created['categories']}",
+            0x2ecc71,
+            actor
+        )
+        await send_log(bot, "owner", log_emb, discord_id=actor.id)
+        await send_log(bot, "bot", log_emb, discord_id=actor.id)
+    except Exception:
+        pass
+    try:
+        await status_message.delete()
+    except Exception:
+        pass
+
+class StartSetupChoiceView(discord.ui.View):
+    def __init__(self, author_id:int):
+        super().__init__(timeout=180)
+        self.author_id = author_id
+
+    async def interaction_check(self, interaction:discord.Interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ Nur der Admin, der `!start` ausgeführt hat, kann diese Auswahl benutzen.", ephemeral=True)
+            return False
+        return True
+
+    async def disable_all(self, message):
+        for child in self.children:
+            child.disabled = True
+        try:
+            await message.edit(view=self)
+        except Exception:
+            pass
+
+    @discord.ui.button(label="❌ Abbruch", style=discord.ButtonStyle.red)
+    async def abort_btn(self, interaction:discord.Interaction, button:discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="❌ Setup abgebrochen.", embed=None, view=self)
+
+    @discord.ui.button(label="➕ Nur hinzufügen", style=discord.ButtonStyle.green)
+    async def add_btn(self, interaction:discord.Interaction, button:discord.ui.Button):
+        await interaction.response.defer()
+        await self.disable_all(interaction.message)
+        await interaction.message.edit(content="➕ **Setup-Modus: Nur hinzufügen** – es werden nur fehlende Elemente ergänzt.", embed=None, view=self)
+        await perform_server_setup(interaction.guild, interaction.user, interaction.message, mode="add")
+
+    @discord.ui.button(label="♻️ Komplett neu aufsetzen", style=discord.ButtonStyle.blurple)
+    async def reset_btn(self, interaction:discord.Interaction, button:discord.ui.Button):
+        await interaction.response.defer()
+        await self.disable_all(interaction.message)
+        await interaction.message.edit(content="♻️ **Setup-Modus: Komplett neu aufsetzen** – alte VOID-Struktur wird gelöscht und sauber neu aufgebaut.", embed=None, view=self)
+        await perform_server_setup(interaction.guild, interaction.user, interaction.message, mode="reset")
+
+@bot.command(name="start")
+@commands.has_permissions(administrator=True)
+async def start_cmd(ctx):
+    if OWNER_ID and ctx.author.id != OWNER_ID and not ctx.author.guild_permissions.administrator:
+        return await ctx.send("❌ Nur Server-Owner / Admin.")
+    emb = discord.Embed(
+        title="🚀 Void_Shop Setup-Assistent",
+        description=(
+            "Du hast `!start` ausgeführt.\n\n"
+            "Bitte wähle **eine** von 3 Möglichkeiten:\n\n"
+            "**1️⃣ Abbruch**\n"
+            "→ bricht den Vorgang sofort ab\n\n"
+            "**2️⃣ Nur hinzufügen**\n"
+            "→ fehlende Rollen, Kanäle, Logs, Panels und Stats ergänzen\n\n"
+            "**3️⃣ Komplett neu aufsetzen**\n"
+            "→ löscht die vorhandene VOID-Struktur und baut alles sauber neu auf"
+        ),
+        color=0xFF2020
+    )
+    emb.set_footer(text="Void_Shop • Setup mit Buttons")
+    await ctx.send(embed=emb, view=StartSetupChoiceView(ctx.author.id))
 
 # =====================================================================
 #  📊 STATS LOOP
@@ -1239,9 +1740,10 @@ async def update_stats_channels(guild:discord.Guild=None):
 @tasks.loop(minutes=5)
 async def stats_loop():
     try:
-        if GUILD_ID:
-            g = bot.get_guild(GUILD_ID)
-            if g: await update_stats_channels(g)
+        guilds = [bot.get_guild(GUILD_ID)] if GUILD_ID else list(bot.guilds)
+        for g in guilds:
+            if g:
+                await update_stats_channels(g)
     except Exception as e:
         print(f"[stats_loop] {e}")
 
@@ -1251,24 +1753,70 @@ async def before_stats():
     await asyncio.sleep(8)
 
 # =====================================================================
-#  📥 WELCOME / LEAVE – schöner Text
+#  🤖 EVENTS / LOGSYSTEM 2.0
 # =====================================================================
 @bot.event
+async def on_ready():
+    print(f"[READY] {bot.user} ({bot.user.id})")
+    for guild in bot.guilds:
+        try:
+            await refresh_invite_cache(guild)
+        except Exception:
+            pass
+        try:
+            await update_stats_channels(guild)
+        except Exception:
+            pass
+    try:
+        emb = make_embed("🤖 Bot online", f"Eingeloggt als **{bot.user}**\nGuilds: **{len(bot.guilds)}**\nDashboard-Port: **{DASHBOARD_PORT}**", 0x2ecc71)
+        await send_log(bot, "bot", emb, discord_id=(bot.user.id if bot.user else None))
+    except Exception:
+        pass
+
+@bot.event
+async def on_invite_create(invite):
+    await refresh_invite_cache(invite.guild)
+    inviter = invite.inviter.mention if invite.inviter else "Unbekannt"
+    emb = make_embed("🔗 Invite erstellt", f"Code: `{invite.code}`\nEinladender: {inviter}\nChannel: {getattr(invite.channel, 'mention', '–')}", 0x5865F2)
+    await send_log(bot, "invite", emb, discord_id=(invite.inviter.id if invite.inviter else None), meta=f"code={invite.code}")
+
+@bot.event
+async def on_invite_delete(invite):
+    await refresh_invite_cache(invite.guild)
+    emb = make_embed("🗑️ Invite gelöscht", f"Code: `{invite.code}`", 0x95a5a6)
+    await send_log(bot, "invite", emb, meta=f"code={invite.code}")
+
+@bot.event
 async def on_member_join(member):
-    # DB: ensure user row
+    used_invite = await detect_used_invite(member.guild)
+    inviter_text = ""
+    reward_text = ""
     try:
         async with get_db() as db:
             await db_execute(db, "INSERT OR IGNORE INTO users(discord_id, joined_at) VALUES(?, CURRENT_TIMESTAMP)", (member.id,))
             await db_commit(db)
-    except: pass
-    # Unverified Rolle geben
+    except Exception:
+        pass
     try:
         ur_id = ROL("unverified")
         if ur_id:
             r = member.guild.get_role(ur_id)
-            if r: await member.add_roles(r, reason="Void_Shop Auto Unverified")
-    except: pass
-    # Welcome Channel
+            if r:
+                await member.add_roles(r, reason="Void_Shop Auto Unverified")
+    except Exception:
+        pass
+    if used_invite and used_invite.inviter:
+        inviter_text = f"\nEingeladen von: {used_invite.inviter.mention} (`{used_invite.code}`)"
+        try:
+            rewarded = await reward_invite_if_needed(used_invite.inviter.id, member.id, used_invite.code)
+            if rewarded:
+                reward_text = f"\n🎁 {used_invite.inviter.mention} erhielt +{COIN_REWARDS['invite']} Void-Coins."
+                coin_emb = make_embed("🪙 Invite-Reward", f"{used_invite.inviter.mention} hat **{member.mention}** eingeladen → +{COIN_REWARDS['invite']} Coins", 0xFFD700, used_invite.inviter)
+                await send_log(bot, "coins", coin_emb, discord_id=used_invite.inviter.id)
+            invite_emb = make_embed("🔗 Mitglied per Invite beigetreten", f"Neues Mitglied: {member.mention}\nEinladender: {used_invite.inviter.mention}\nCode: `{used_invite.code}`{reward_text}", 0x5865F2, member)
+            await send_log(bot, "invite", invite_emb, discord_id=member.id)
+        except Exception as e:
+            print(f"[invite reward] {e}")
     wc_id = C("welcome")
     if wc_id:
         ch = member.guild.get_channel(wc_id)
@@ -1281,9 +1829,11 @@ async def on_member_join(member):
                     "• ⚡ FastFlags • ☁️ Sky\n"
                     "• 👕 T-Shirt Template • 🛡️ Anti Alt Ban\n\n"
                     f"👉 **Starte hier:** <#{C('verify') or ch.id}>\n"
-                    "🔓 1 Klick Verify → sofort Zugang\n\n"
+                    "🔓 Discord-Zugang freischalten\n"
+                    "🔐 Danach `!verify DeinRobloxName` für Bulletproof Roblox-Verify\n\n"
                     "💬 Fragen? Eröffne ein Ticket!\n"
-                    "🪙 Sammle Void-Coins für Rabatte!\n\n"
+                    "🪙 Sammle Void-Coins für Rabatte!\n"
+                    "🎁 Lade Freunde ein und erhalte Invite-Rewards!\n\n"
                     f"*Du bist Mitglied **#{member.guild.member_count}*** ❤️"
                 ),
                 color=0xFF2020,
@@ -1293,19 +1843,26 @@ async def on_member_join(member):
                 emb.set_thumbnail(url=member.display_avatar.url)
                 if member.guild.icon:
                     emb.set_footer(text="Void_Shop • danke dass du da bist", icon_url=member.guild.icon.url)
-            except: pass
+            except Exception:
+                pass
             try:
                 await ch.send(content=member.mention, embed=emb)
-            except: pass
-    # log
-    emb_log = make_embed("📥 Mitglied beigetreten",
-        f"{member.mention} **{member}**\nAccount erstellt: <t:{int(member.created_at.timestamp())}:R>\nID: `{member.id}`",
-        0x2ecc71, member)
+            except Exception:
+                pass
+    emb_log = make_embed(
+        "📥 Mitglied beigetreten",
+        f"{member.mention} **{member}**\nAccount erstellt: <t:{int(member.created_at.timestamp())}:R>\nID: `{member.id}`{inviter_text}{reward_text}",
+        0x2ecc71,
+        member
+    )
     await send_log(bot, "join", emb_log, discord_id=member.id)
+    try:
+        await update_stats_channels(member.guild)
+    except Exception:
+        pass
 
 @bot.event
 async def on_member_remove(member):
-    # Goodbye Channel
     gc_id = C("goodbye")
     if gc_id:
         ch = member.guild.get_channel(gc_id)
@@ -1316,130 +1873,194 @@ async def on_member_remove(member):
                 color=0x95a5a6,
                 timestamp=datetime.datetime.utcnow()
             )
-            try: emb.set_thumbnail(url=member.display_avatar.url)
-            except: pass
-            try: await ch.send(embed=emb)
-            except: pass
+            try:
+                emb.set_thumbnail(url=member.display_avatar.url)
+            except Exception:
+                pass
+            try:
+                await ch.send(embed=emb)
+            except Exception:
+                pass
     emb_log = make_embed("📤 Mitglied verlassen", f"**{member}**\n`{member.id}`", 0xe74c3c, member)
-    await send_log(bot, "join", emb_log, discord_id=member.id)
+    await send_log(bot, "leave", emb_log, discord_id=member.id)
+    try:
+        await update_stats_channels(member.guild)
+    except Exception:
+        pass
 
-# =====================================================================
-#  ...  REST: on_voice_state_update, on_message (antiscam+vouch), on_message_delete/edit,
-#        on_member_ban/unban, on_guild_channel_create/delete  ...
-#  (identisch zu v1.1 – aus Platzgründen hier zusammengefasst, ist VOLL im File)
-# =====================================================================
+@bot.event
+async def on_member_update(before, after):
+    if before.bot:
+        return
+    if before.nick != after.nick:
+        emb = make_embed("🪪 Nickname geändert", f"{after.mention}\nVorher: `{before.nick or before.name}`\nNachher: `{after.nick or after.name}`", 0x7289DA, after)
+        await send_log(bot, "system", emb, discord_id=after.id)
+    before_roles = {r.id for r in before.roles if not r.is_default()}
+    after_roles = {r.id for r in after.roles if not r.is_default()}
+    added = [r.mention for r in after.roles if r.id in (after_roles - before_roles)]
+    removed = [r.mention for r in before.roles if r.id in (before_roles - after_roles)]
+    if added or removed:
+        parts = []
+        if added:
+            parts.append("Hinzugefügt: " + ", ".join(added[:10]))
+        if removed:
+            parts.append("Entfernt: " + ", ".join(removed[:10]))
+        emb = make_embed("🎭 Rollen-Update", f"{after.mention}\n" + "\n".join(parts), 0x7289DA, after)
+        await send_log(bot, "system", emb, discord_id=after.id)
 
-# --- voice / message / mod / ticket logs ---
 @bot.event
 async def on_voice_state_update(member, before, after):
     if before.channel == after.channel:
-        changes=[]
+        changes = []
         if before.self_mute != after.self_mute: changes.append(f"Mute {before.self_mute}→{after.self_mute}")
         if before.self_deaf != after.self_deaf: changes.append(f"Deaf {before.self_deaf}→{after.self_deaf}")
         if before.self_stream != after.self_stream: changes.append(f"Stream {before.self_stream}→{after.self_stream}")
         if changes:
-            emb = make_embed("🎙️ Voice Update", f"{member.mention}\n"+"\n".join(changes), 0x3498db, member)
-            await send_log(bot,"voice",emb,discord_id=member.id,channel_id=(after.channel.id if after.channel else None))
+            emb = make_embed("🎙️ Voice Update", f"{member.mention}\n" + "\n".join(changes), 0x3498db, member)
+            await send_log(bot, "voice", emb, discord_id=member.id, channel_id=(after.channel.id if after.channel else None))
         return
     if after.channel and not before.channel:
-        desc=f"{member.mention} → 🔊 **{after.channel.name}**"; color=0x2ecc71
+        desc = f"{member.mention} → 🔊 **{after.channel.name}**"; color = 0x2ecc71
     elif before.channel and not after.channel:
-        desc=f"{member.mention} ← 🔊 **{before.channel.name}**"; color=0xe74c3c
+        desc = f"{member.mention} ← 🔊 **{before.channel.name}**"; color = 0xe74c3c
     else:
-        desc=f"{member.mention} 🔀 **{before.channel.name}** → **{after.channel.name}**"; color=0xf39c12
+        desc = f"{member.mention} 🔀 **{before.channel.name}** → **{after.channel.name}**"; color = 0xf39c12
     emb = make_embed("🎙️ Voice", desc, color, member)
-    await send_log(bot,"voice",emb,discord_id=member.id,
-        channel_id=(after.channel.id if after.channel else before.channel.id if before.channel else None))
+    await send_log(bot, "voice", emb, discord_id=member.id, channel_id=(after.channel.id if after.channel else before.channel.id if before.channel else None))
 
 @bot.event
 async def on_message(message):
     if message.author.bot:
-        await bot.process_commands(message); return
+        await bot.process_commands(message)
+        return
     if message.guild:
-        # AntiScam
+        if message.channel.name.startswith("ticket-") and is_staff_member(message.author):
+            try:
+                await note_ticket_staff_response(message.channel.id, message.author.id)
+            except Exception as e:
+                print(f"[ticket response] {e}")
         bad = scan_message_antiscam(message.content)
         if bad:
-            try: await message.delete()
-            except: pass
             try:
-                emb_warn = discord.Embed(title="🚨 Link blockiert – Anti-Scam",
-                    description="Dein Link wurde entfernt (nicht gewhitelistet).\n\n**Erlaubt:** `roblox.com`, `discord.com`, `discord.gg`, `youtube.com`, `github.com`",
-                    color=0xe74c3c)
+                await message.delete()
+            except Exception:
+                pass
+            try:
+                emb_warn = discord.Embed(title="🚨 Link blockiert – Anti-Scam", description="Dein Link wurde entfernt (nicht gewhitelistet).\n\n**Erlaubt:** `roblox.com`, `discord.com`, `discord.gg`, `youtube.com`, `github.com`", color=0xe74c3c)
                 await message.channel.send(f"{message.author.mention}", embed=emb_warn, delete_after=20)
-            except: pass
+            except Exception:
+                pass
             details = "\n".join([f"• `{b['url']}` → {b['reason']}" for b in bad])
-            log_emb = make_embed("🚨 AntiScam – Link gelöscht",
-                f"**User:** {message.author.mention}\n**Channel:** {message.channel.mention}\n\n{details}\n\n```{message.content[:800]}```",
-                0xe74c3c, message.author)
-            await send_log(bot,"antiscam",log_emb,discord_id=message.author.id,channel_id=message.channel.id,meta=str(bad))
+            log_emb = make_embed("🚨 AntiScam – Link gelöscht", f"**User:** {message.author.mention}\n**Channel:** {message.channel.mention}\n\n{details}\n\n```{message.content[:800]}```", 0xe74c3c, message.author)
+            await send_log(bot, "antiscam", log_emb, discord_id=message.author.id, channel_id=message.channel.id, meta=str(bad))
             try:
                 async with get_db() as db:
                     for b in bad:
-                        await db_execute(db, "INSERT INTO antiscam_hits(discord_id,channel_id,url,reason) VALUES(?,?,?,?)",
-                            (message.author.id, message.channel.id, b["url"], b["reason"]))
+                        await db_execute(db, "INSERT INTO antiscam_hits(discord_id,channel_id,url,reason) VALUES(?,?,?,?)", (message.author.id, message.channel.id, b["url"], b["reason"]))
                     await db_commit(db)
-            except Exception as e: print(f"[antiscam db] {e}")
+            except Exception as e:
+                print(f"[antiscam db] {e}")
             return
-        # Vouch 5★
         if "vouch" in message.channel.name.lower():
             c = message.content.lower()
-            if message.content.count("⭐")>=5 or "5/5" in c or "5★" in c or "5 sterne" in c:
+            if message.content.count("⭐") >= 5 or "5/5" in c or "5★" in c or "5 sterne" in c:
                 await add_coins(message.author.id, COIN_REWARDS["vouch_5star"], "vouch_5star")
                 try:
                     async with get_db() as db:
-                        await db_execute(db, "INSERT INTO vouches(discord_id,stars,message,coins_awarded) VALUES(?,?,?,?)",
-                            (message.author.id,5,message.content[:500],COIN_REWARDS["vouch_5star"]))
+                        await db_execute(db, "INSERT INTO vouches(discord_id,stars,message,coins_awarded) VALUES(?,?,?,?)", (message.author.id, 5, message.content[:500], COIN_REWARDS["vouch_5star"]))
                         await db_commit(db)
-                except: pass
+                except Exception:
+                    pass
                 try:
                     await message.add_reaction("✅")
                     await message.reply(f"Danke für dein 5⭐ Vouch! +{COIN_REWARDS['vouch_5star']} Coins!", delete_after=15)
-                except: pass
-                log_emb = make_embed("🪙 Vouch belohnt",
-                    f"{message.author.mention} 5★ → +{COIN_REWARDS['vouch_5star']} Coins",0xFFD700,message.author)
-                await send_log(bot,"coins",log_emb,discord_id=message.author.id,channel_id=message.channel.id)
+                except Exception:
+                    pass
+                log_emb = make_embed("🪙 Vouch belohnt", f"{message.author.mention} 5★ → +{COIN_REWARDS['vouch_5star']} Coins", 0xFFD700, message.author)
+                await send_log(bot, "coins", log_emb, discord_id=message.author.id, channel_id=message.channel.id)
     await bot.process_commands(message)
 
 @bot.event
 async def on_message_delete(message):
-    if message.author.bot or not message.guild: return
-    content = (message.content[:1000]+"…") if len(message.content)>1000 else message.content
-    emb = make_embed("🗑️ Nachricht gelöscht",
-        f"**Channel:** {message.channel.mention}\n**Author:** {message.author.mention}\n\n```{content or '[Embed/Attachment]'}```",
-        0xe74c3c, message.author)
-    await send_log(bot,"message",emb,discord_id=message.author.id,channel_id=message.channel.id,meta=message.content)
+    if message.author.bot or not message.guild:
+        return
+    content = (message.content[:1000] + "…") if len(message.content) > 1000 else message.content
+    emb = make_embed("🗑️ Nachricht gelöscht", f"**Channel:** {message.channel.mention}\n**Author:** {message.author.mention}\n\n```{content or '[Embed/Attachment]'}```", 0xe74c3c, message.author)
+    await send_log(bot, "message", emb, discord_id=message.author.id, channel_id=message.channel.id, meta=message.content)
 
 @bot.event
 async def on_message_edit(before, after):
-    if before.author.bot or not before.guild: return
-    if before.content == after.content: return
+    if before.author.bot or not before.guild:
+        return
+    if before.content == after.content:
+        return
     emb = discord.Embed(title="✏️ Nachricht bearbeitet", color=0xf39c12, timestamp=datetime.datetime.utcnow())
     emb.add_field(name="Vorher", value=(before.content[:1000] or "…"), inline=False)
     emb.add_field(name="Nachher", value=(after.content[:1000] or "…"), inline=False)
     emb.add_field(name="User / Channel", value=f"{after.author.mention} • {after.channel.mention} • [Jump]({after.jump_url})", inline=False)
-    await send_log(bot,"message",emb,discord_id=after.author.id,channel_id=after.channel.id)
+    await send_log(bot, "message", emb, discord_id=after.author.id, channel_id=after.channel.id)
 
 @bot.event
 async def on_member_ban(guild, user):
-    emb = make_embed("🔨 Ban", f"{getattr(user,'mention',user)} **{user}**\n`{user.id}`",0xe74c3c)
-    await send_log(bot,"mod",emb,discord_id=user.id)
+    emb = make_embed("🔨 Ban", f"{getattr(user,'mention',user)} **{user}**\n`{user.id}`", 0xe74c3c)
+    await send_log(bot, "mod", emb, discord_id=user.id)
 
 @bot.event
 async def on_member_unban(guild, user):
-    emb = make_embed("🔓 Unban", f"{user} `{user.id}`",0x2ecc71)
-    await send_log(bot,"mod",emb,discord_id=user.id)
+    emb = make_embed("🔓 Unban", f"{user} `{user.id}`", 0x2ecc71)
+    await send_log(bot, "mod", emb, discord_id=user.id)
+
+@bot.event
+async def on_guild_role_create(role):
+    emb = make_embed("🆕 Rolle erstellt", f"{role.mention if hasattr(role,'mention') else role.name}\nID: `{role.id}`", 0x7289DA)
+    await send_log(bot, "system", emb, channel_id=None, meta=f"role_id={role.id}")
+
+@bot.event
+async def on_guild_role_delete(role):
+    emb = make_embed("🗑️ Rolle gelöscht", f"{role.name}\nID: `{role.id}`", 0x95a5a6)
+    await send_log(bot, "system", emb, meta=f"role_id={role.id}")
+
+@bot.event
+async def on_guild_role_update(before, after):
+    changes = []
+    if before.name != after.name:
+        changes.append(f"Name: `{before.name}` → `{after.name}`")
+    if before.colour != after.colour:
+        changes.append(f"Farbe: `{before.colour}` → `{after.colour}`")
+    if before.permissions.value != after.permissions.value:
+        changes.append("Permissions geändert")
+    if changes:
+        emb = make_embed("✏️ Rolle bearbeitet", f"**{after.name}**\n" + "\n".join(changes), 0x7289DA)
+        await send_log(bot, "system", emb, meta=f"role_id={after.id}")
 
 @bot.event
 async def on_guild_channel_create(channel):
+    emb = make_embed("🆕 Kanal erstellt", f"#{channel.name}\nTyp: `{channel.type}`", 0x7289DA)
+    await send_log(bot, "system", emb, channel_id=channel.id)
     if "ticket" in channel.name.lower():
-        emb = make_embed("🎫 Ticket geöffnet", f"{channel.mention} erstellt",0x1abc9c)
-        await send_log(bot,"ticket",emb,channel_id=channel.id)
+        emb = make_embed("🎫 Ticket geöffnet", f"{channel.mention} erstellt", 0x1abc9c)
+        await send_log(bot, "ticket", emb, channel_id=channel.id)
 
 @bot.event
 async def on_guild_channel_delete(channel):
+    emb = make_embed("🗑️ Kanal gelöscht", f"#{channel.name}\nTyp: `{channel.type}`", 0x95a5a6)
+    await send_log(bot, "system", emb, meta=f"channel_name={channel.name}")
     if "ticket" in channel.name.lower():
-        emb = make_embed("🎫 Ticket geschlossen", f"#{channel.name} gelöscht",0x95a5a6)
-        await send_log(bot,"ticket",emb,channel_id=channel.id)
+        emb = make_embed("🎫 Ticket geschlossen", f"#{channel.name} gelöscht", 0x95a5a6)
+        await send_log(bot, "ticket", emb, channel_id=channel.id)
+
+@bot.event
+async def on_guild_channel_update(before, after):
+    changes = []
+    if before.name != after.name:
+        changes.append(f"Name: `{before.name}` → `{after.name}`")
+    if getattr(before, 'topic', None) != getattr(after, 'topic', None):
+        changes.append("Topic geändert")
+    if getattr(before, 'category_id', None) != getattr(after, 'category_id', None):
+        changes.append("Kategorie geändert")
+    if changes:
+        emb = make_embed("✏️ Kanal bearbeitet", f"#{after.name}\n" + "\n".join(changes), 0x7289DA)
+        await send_log(bot, "system", emb, channel_id=after.id)
 
 # =====================================================================
 #  💬 COMMANDS
@@ -1447,13 +2068,13 @@ async def on_guild_channel_delete(channel):
 @bot.command(name="help")
 async def help_cmd(ctx):
     e = discord.Embed(title="🛍️ Void_Shop v2 ULTIMATE – Befehle", color=0xFF2020)
-    e.add_field(name="👑 Setup", value="`!start` – erstellt ganzen Server (Admin)", inline=False)
-    e.add_field(name="🔐 Verify", value="`!verify Name` – Bio-Code\nOne-Click im <#{}>".format(C("verify") or 0), inline=False)
+    e.add_field(name="👑 Setup", value="`!start` – öffnet den Setup-Assistenten mit 3 Auswahlmöglichkeiten", inline=False)
+    e.add_field(name="🔐 Verify", value="`!verify Name` – Bulletproof Roblox Bio-Code-Auth\nDiscord-Zugang im <#{}>".format(C("verify") or 0), inline=False)
     e.add_field(name="🛍️ Shop", value="`!checkbuy` – Auto-Delivery\n`!products`", inline=False)
     e.add_field(name="🪙 Coins", value="`!coins` `!shop` `!redeem <150|300|500|800>` `!daily` `!coinlb`", inline=False)
-    e.add_field(name="🎫 Tickets", value="Erstellen in Ticket-Panel\nSchließen → 3 Fragen + ⭐", inline=False)
-    e.add_field(name="👑 Owner", value="`!revenue` `!stafflb`", inline=False)
-    e.set_footer(text="Void_Shop v2.0 ULTIMATE • Web: http://localhost:5000")
+    e.add_field(name="🎫 Tickets", value="Erstellen im Ticket-Panel\nClaim + Survey + Staff-Tracking", inline=False)
+    e.add_field(name="👑 Owner", value="Revenue / Staff / Logs / Tickets primär im Dashboard sichtbar", inline=False)
+    e.set_footer(text=f"Void_Shop v2.0 ULTIMATE • Web: http://localhost:{DASHBOARD_PORT}")
     await ctx.send(embed=e)
 
 @bot.command(name="verify")
@@ -1492,7 +2113,7 @@ async def checkbuy_cmd(ctx):
         cur = await db_execute(db, "SELECT roblox_id, roblox_name FROM users WHERE discord_id=? AND verified=1", (ctx.author.id,))
         row = await cur.fetchone()
     if not row:
-        return await ctx.send(f"{ctx.author.mention} ❌ Nicht verifiziert! `!verify DeinName` oder One-Click im Verify-Kanal.", delete_after=20)
+        return await ctx.send(f"{ctx.author.mention} ❌ Nicht für den Shop verifiziert! Nutze zuerst `!verify DeinRobloxName` für die sichere Bio-Code-Auth.", delete_after=20)
     try: roblox_id=row[0]; roblox_name=row[1]
     except: roblox_id=row["roblox_id"]; roblox_name=row["roblox_name"]
     msg = await ctx.send(f"🔍 Prüfe Käufe für **{roblox_name}** (`{roblox_id}`) …")
@@ -1518,12 +2139,22 @@ async def checkbuy_cmd(ctx):
         embed.add_field(name="Download Links", value="\n".join(f"• <{u}>" for u in files), inline=False)
     embed.set_footer(text="Void_Shop • Auto-Delivery • danke ❤️")
     dm_ok=True
+    dm_message = None
     try:
         dm = await ctx.author.create_dm()
-        await dm.send(embed=embed)
+        dm_message = await dm.send(embed=embed)
     except Exception:
         dm_ok=False
         await ctx.send(f"⚠️ Konnte keine DM senden! Öffne deine DMs.\n\n**Manuell:**\n"+"\n".join(files), delete_after=60)
+    try:
+        async with get_db() as db:
+            cur = await db_execute(db, "SELECT id FROM purchases WHERE discord_id=? AND product_key=? ORDER BY id DESC LIMIT 1", (ctx.author.id, product_key))
+            prow = await cur.fetchone()
+            purchase_id = prow[0] if prow else None
+            await db_execute(db, "INSERT INTO deliveries(purchase_id, discord_id, product_key, dm_message_id, success) VALUES(?,?,?,?,?)", (purchase_id, ctx.author.id, product_key, str(getattr(dm_message, 'id', '')), 1 if dm_ok else 0))
+            await db_commit(db)
+    except Exception as e:
+        print(f"[delivery log] {e}")
     # Rollen
     try:
         role_key = product.get("role_give","customer")
@@ -1541,6 +2172,10 @@ async def checkbuy_cmd(ctx):
     coins_reward = product.get("coins_reward", COIN_REWARDS["purchase"])
     await add_coins(ctx.author.id, coins_reward, "purchase", product_key)
     await msg.edit(content=f"🎉 **{product['name']}** erfolgreich geliefert! Check deine DMs {ctx.author.mention}\n+{coins_reward} Void-Coins!")
+    try:
+        await update_stats_channels(ctx.guild)
+    except Exception:
+        pass
     # ticker
     tc = L("ticker")
     if tc:
@@ -1697,7 +2332,7 @@ th{color:var(--muted)}
 input,textarea{width:100%;padding:10px;background:#0f0f18;border:1px solid #2a2a40;color:#eee;border-radius:10px}
 </style></head><body>
 <div class=nav><b>🛍️ VOID_SHOP v2</b>
-<a href="/">Dashboard</a><a href="/products">Produkte</a><a href="/coins">Coins</a><a href="/logs">Logs</a><a href="/staff">Staff</a>
+<a href="/">Dashboard</a><a href="/products">Produkte</a><a href="/coins">Coins</a><a href="/tickets">Tickets</a><a href="/logs">Logs</a><a href="/staff">Staff</a>
 <span style="flex:1"></span><a href="/logout">Logout</a></div>
 <div class=wrap>{{ content|safe }}
 <div class=footer>Void_Shop v2.0 ULTIMATE • RealVexo696 • Companion to VOID-TOOLS v2.6 • aiosqlite={{aiosqlite}}</div>
@@ -1710,7 +2345,7 @@ input,textarea{width:100%;padding:10px;background:#0f0f18;border:1px solid #2a2a
     @app.route("/login", methods=["GET","POST"])
     def login():
         if request.method=="POST":
-            if request.form.get("code") in (DASHBOARD_LOGIN_CODE, str(OWNER_ID), "voidshop"):
+            if request.form.get("code") in (DASHBOARD_LOGIN_CODE, str(OWNER_ID)):
                 session["owner"]=True
                 return redirect("/")
             err="<p style=color:#ff6b6b>Falscher Code</p>"
@@ -1725,7 +2360,7 @@ button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border
 {err}
 <form method=post><input type=password name=code placeholder="Owner Code" autofocus>
 <button>Einloggen</button></form>
-<small style="color:#666">Code: <b>voidshop</b></small></div>"""
+<small style="color:#666">Aktueller Login-Code: <b>{DASHBOARD_LOGIN_CODE}</b></small></div>"""
     @app.route("/logout")
     def logout(): session.clear(); return redirect("/login")
     def owner_required(f):
@@ -1762,6 +2397,10 @@ button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border
  <div class=card><h3>Conversion</h3><div class="big green">{conv}%</div>verified → Kauf</div>
  <div class=card><h3>Offene Tickets</h3><div class="big" style="color:#f39c12">{open_tickets}</div>live</div>
  <div class=card><h3>AntiScam</h3><div class="big green">🛡️ aktiv</div>24/7 Schutz</div>
+</div>
+<div class=grid style="margin-top:16px">
+ <div class=card><h3>👑 Owner-Zentrale</h3><div style="display:grid;gap:10px"><a class=btn href="/staff">Supporter-Leaderboard</a><a class=btn href="/tickets">Ticket-Control-Center</a><a class=btn href="/logs">LogSystem 2.0</a><a class=btn href="/coins">Void-Coins</a></div></div>
+ <div class=card><h3>🧩 Aktivierte Features</h3><p>✅ Auto-Delivery<br>✅ Bulletproof Bio-Code-Verify<br>✅ AntiScam / Phishing-Schild<br>✅ Live-Käufe Ticker<br>✅ Invite-Rewards & Void-Coins<br>✅ Staff-Tracking & Ratings</p></div>
 </div>
 <div class=two style="margin-top:16px">
  <div class=card><h3>📈 Top Produkte</h3><table><tr><th>Produkt</th><th>Verkäufe</th><th>Umsatz</th></tr>"""
@@ -1827,7 +2466,7 @@ button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border
             rows = q("SELECT * FROM logs ORDER BY created_at DESC LIMIT 400")
         types = [r["log_type"] for r in q("SELECT DISTINCT log_type FROM logs")]
         filt = " ".join([f"<a class=badge href=/logs?type={x}>{x}</a>" for x in types]) + " <a class=badge href=/logs>alle</a>"
-        html = f"<h2>📜 LogSystem 2.0 – Kommandozentrale</h2><div class=card style='margin-bottom:12px'>{filt}<br><br><small>12 Kanäle: join · voice · message · shop · verify · antiscam · ticket · coins · mod · ticker · bot · owner</small></div>"
+        html = f"<h2>📜 LogSystem 2.0 – Kommandozentrale</h2><div class=card style='margin-bottom:12px'>{filt}<br><br><small>{len(LOG_CHANNEL_DEFS)} Kanäle: join · leave · voice · message · invite · shop · verify · antiscam · ticket · coins · mod · system · ticker · bot · owner</small></div>"
         html += "<div class=card><table><tr><th>Zeit</th><th>Typ</th><th>User</th><th>Channel</th><th>Content</th></tr>"
         for r in rows:
             uid = f"&lt;@{r['discord_id']}&gt;" if r["discord_id"] else ""
@@ -1836,17 +2475,41 @@ button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border
             html += f"<tr><td>{r['created_at']}</td><td><span class=badge>{r['log_type']}</span></td><td>{uid}</td><td>{ch}</td><td>{cont}</td></tr>"
         html += "</table></div>"
         return page(html)
+    @app.route("/tickets")
+    @owner_required
+    def tickets_page():
+        rows = q("""
+            SELECT t.channel_id, t.user_id, t.type, t.created_at, t.closed,
+                   m.claimed_by, m.claimed_at, m.first_staff_response_at, m.closer_id, m.closed_at, m.survey_product, m.survey_stars
+            FROM tickets_open t
+            LEFT JOIN ticket_metrics m ON m.channel_id=t.channel_id
+            ORDER BY t.closed ASC, t.created_at DESC
+            LIMIT 200
+        """)
+        html = "<h2>🎫 Ticket Control Center</h2><div class=card><table><tr><th>Status</th><th>User</th><th>Typ</th><th>Claimed By</th><th>First Response</th><th>Produkt</th><th>⭐</th><th>Erstellt</th></tr>"
+        for r in rows:
+            status = "🟢 Offen" if not r["closed"] else "⚫ Geschlossen"
+            claimed = f"&lt;@{r['claimed_by']}&gt;" if r["claimed_by"] else "–"
+            first_response = r["first_staff_response_at"] or "–"
+            product = r["survey_product"] or "–"
+            stars = r["survey_stars"] or "–"
+            html += f"<tr><td>{status}</td><td>&lt;@{r['user_id']}&gt;</td><td>{r['type']}</td><td>{claimed}</td><td>{first_response}</td><td>{product}</td><td>{stars}</td><td>{r['created_at']}</td></tr>"
+        if not rows:
+            html += "<tr><td colspan=8 style=color:#666>Noch keine Ticket-Daten vorhanden.</td></tr>"
+        html += "</table></div>"
+        return page(html)
     @app.route("/staff")
     @owner_required
     def staff_page():
-        staff = q("SELECT staff_id, tickets_claimed, tickets_closed, rating_sum, rating_count, CASE WHEN rating_count>0 THEN CAST(rating_sum AS FLOAT)/rating_count ELSE 0 END as avg FROM staff_stats ORDER BY tickets_closed DESC")
+        staff = q("SELECT staff_id, tickets_claimed, tickets_closed, avg_response_sec, rating_sum, rating_count, CASE WHEN rating_count>0 THEN CAST(rating_sum AS FLOAT)/rating_count ELSE 0 END as avg FROM staff_stats ORDER BY tickets_closed DESC, avg DESC")
         html = "<h2>👑 Supporter-Leaderboard – Mitarbeiter des Monats</h2><div class=card>"
-        html += "<table><tr><th>#</th><th>Staff</th><th>Tickets Closed</th><th>Claimed</th><th>Bewertung ⭐</th><th>Votes</th></tr>"
+        html += "<table><tr><th>#</th><th>Staff</th><th>Tickets Closed</th><th>Claimed</th><th>Ø Antwortzeit</th><th>Bewertung ⭐</th><th>Votes</th></tr>"
         for i,s in enumerate(staff,1):
             medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"#{i}"
-            html += f"<tr><td>{medal}</td><td>&lt;@{s['staff_id']}&gt;</td><td><b>{s['tickets_closed']}</b></td><td>{s['tickets_claimed']}</td><td>{round(s['avg'],2) if s['avg'] else '–'} ⭐</td><td>{s['rating_count']}</td></tr>"
+            resp = f"{int(s['avg_response_sec'])}s" if s['avg_response_sec'] else "–"
+            html += f"<tr><td>{medal}</td><td>&lt;@{s['staff_id']}&gt;</td><td><b>{s['tickets_closed']}</b></td><td>{s['tickets_claimed']}</td><td>{resp}</td><td>{round(s['avg'],2) if s['avg'] else '–'} ⭐</td><td>{s['rating_count']}</td></tr>"
         if not staff:
-            html += "<tr><td colspan=6 style=color:#666>Noch keine Daten. Staff-Stats werden beim Ticket-Close automatisch erfasst.</td></tr>"
+            html += "<tr><td colspan=7 style=color:#666>Noch keine Daten. Staff-Stats werden beim Ticket-Close automatisch erfasst.</td></tr>"
         html += "</table><br><p><b>Mitarbeiter des Monats</b> wird automatisch an Platz #1 vergeben – perfekt für Monats-Belohnung!</p></div>"
         return page(html)
     @app.route("/api/revenue")
@@ -1882,7 +2545,7 @@ async def main():
 ║    OWNER_ID=123456789                                       ║
 ║                                                              ║
 ║  Dann:                                                      ║
-║    !start  → erstellt 37 Rollen + ~30 Kanäle + 12 Logs      ║
+║    !start  → erstellt Rollen + ~30 Kanäle + erweitertes LogSystem ║
 ║                                                              ║
 ║  pip install discord.py aiohttp aiosqlite Flask python-dotenv║
 ╚══════════════════════════════════════════════════════════════╝
