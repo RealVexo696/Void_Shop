@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🛍️ VOID_SHOP v2.0 ULTIMATE – ALL-IN-ONE
+🛍️ VOID_SHOP v5.0 COSMOS – ALL-IN-ONE
 RealVexo696 / Void_Shop
 Companion to VOID-TOOLS v2.6 by V0id-v2
 
-v2.0 – 27.06.2026 ULTIMATE
+v5.0 – 27.06.2026 COSMOS
 - !start → erstellt automatisch 60+ Kanäle + erweitertes LogSystem + Shop-Struktur
 - Ticket-System: 🛒 Produkt kaufen / 💬 Allgemeiner Support / 🤝 Partnerschaft
 - Ticket-Close Survey: 3 Fragen
@@ -251,6 +251,9 @@ FAQ_KEYWORDS = {
     "delivery": ["dm", "download", "nicht bekommen", "delivery", "lieferung"],
     "ticket": ["ticket", "support", "hilfe", "partnerschaft", "partnership"],
 }
+TICKET_INACTIVITY_HOURS = 8
+TICKET_AUTO_ARCHIVE_HOURS = 72
+VOUCH_REMINDER_DELAY_MINUTES = 15
 
 SAFE_DOMAINS = [
     "roblox.com","www.roblox.com","web.roblox.com",
@@ -285,6 +288,9 @@ CREATE TABLE IF NOT EXISTS revenue_daily(day TEXT PRIMARY KEY, robux INTEGER DEF
 CREATE TABLE IF NOT EXISTS tickets_open(channel_id INTEGER PRIMARY KEY, user_id INTEGER, type TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, closed INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS ticket_metrics(channel_id INTEGER PRIMARY KEY, claimed_by INTEGER, claimed_at TIMESTAMP, first_staff_response_at TIMESTAMP, closer_id INTEGER, closed_at TIMESTAMP, survey_product TEXT, survey_stars INTEGER, priority TEXT DEFAULT "normal");
 CREATE TABLE IF NOT EXISTS ticket_transcripts(channel_id INTEGER PRIMARY KEY, file_path TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS coupons(code TEXT PRIMARY KEY, kind TEXT, value INTEGER, max_uses INTEGER DEFAULT 1, uses INTEGER DEFAULT 0, expires_at TIMESTAMP, created_by INTEGER, active INTEGER DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS coupon_redemptions(id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT, discord_id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS automation_state(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS customer_notes(id INTEGER PRIMARY KEY AUTOINCREMENT, discord_id INTEGER, staff_id INTEGER, note TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS ticket_notes(id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id INTEGER, staff_id INTEGER, note TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS server_config(k TEXT PRIMARY KEY, v TEXT);
@@ -1042,6 +1048,59 @@ async def handle_raid_detection(member:discord.Member):
     await send_log(bot, "mod", emb, discord_id=member.id)
     return True
 
+async def create_coupon(code:str, kind:str, value:int, max_uses:int, days:int, created_by:int):
+    code = (code or '').upper().strip()
+    if not code or kind not in {'percent', 'fixed', 'coins'}:
+        return False, 'Ungültiger Coupon.'
+    expires_at = (datetime.datetime.utcnow() + datetime.timedelta(days=max(1, days))).strftime('%Y-%m-%d %H:%M:%S')
+    async with get_db() as db:
+        try:
+            await db_execute(db, 'INSERT INTO coupons(code, kind, value, max_uses, uses, expires_at, created_by, active) VALUES(?,?,?,?,0,?,?,1)', (code, kind, int(value), int(max_uses), expires_at, created_by))
+            await db_commit(db)
+        except Exception as e:
+            return False, str(e)
+    return True, expires_at
+
+async def list_active_coupons(limit:int=50):
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT * FROM coupons WHERE active=1 ORDER BY created_at DESC LIMIT ?", (limit,))
+        return await cur.fetchall()
+
+async def deactivate_coupon(code:str):
+    async with get_db() as db:
+        await db_execute(db, 'UPDATE coupons SET active=0 WHERE code=?', ((code or '').upper().strip(),))
+        await db_commit(db)
+
+async def redeem_coupon(discord_id:int, code:str):
+    code = (code or '').upper().strip()
+    async with get_db() as db:
+        cur = await db_execute(db, 'SELECT * FROM coupons WHERE code=? AND active=1', (code,))
+        row = await cur.fetchone()
+        if not row:
+            return False, 'Coupon nicht gefunden oder inaktiv.'
+        cur = await db_execute(db, 'SELECT 1 FROM coupon_redemptions WHERE code=? AND discord_id=?', (code, discord_id))
+        if await cur.fetchone():
+            return False, 'Du hast diesen Coupon bereits eingelöst.'
+        uses = int(row['uses'] if hasattr(row, 'keys') else row[4])
+        max_uses = int(row['max_uses'] if hasattr(row, 'keys') else row[3])
+        expires_at = row['expires_at'] if hasattr(row, 'keys') else row[5]
+        kind = row['kind'] if hasattr(row, 'keys') else row[1]
+        value = int(row['value'] if hasattr(row, 'keys') else row[2])
+        exp_dt = parse_db_ts(expires_at)
+        if exp_dt and exp_dt < datetime.datetime.utcnow():
+            return False, 'Dieser Coupon ist abgelaufen.'
+        if uses >= max_uses:
+            return False, 'Dieser Coupon wurde bereits vollständig verbraucht.'
+        await db_execute(db, 'INSERT INTO coupon_redemptions(code, discord_id) VALUES(?,?)', (code, discord_id))
+        await db_execute(db, 'UPDATE coupons SET uses=uses+1 WHERE code=?', (code,))
+        await db_commit(db)
+    if kind == 'coins':
+        await add_coins(discord_id, value, 'coupon', code)
+        return True, f'+{value} Coins'
+    return True, f'{value}{"%" if kind=="percent" else " R$"} Rabatt'
+
+TICKET_REMINDER_CACHE = {}
+VOUCH_REMINDER_CACHE = {}
 INVITE_CACHE = {}
 
 # =====================================================================
@@ -1713,7 +1772,7 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
             role = existing_roles[name]
         else:
             try:
-                role = await guild.create_role(name=name, colour=discord.Colour.from_rgb(*rgb), hoist=hoist, mentionable=mentionable, reason="Void_Shop v2 Setup")
+                role = await guild.create_role(name=name, colour=discord.Colour.from_rgb(*rgb), hoist=hoist, mentionable=mentionable, reason="Void_Shop v5 Setup")
                 created["roles"] += 1
                 await asyncio.sleep(0.35)
             except Exception as e:
@@ -1739,7 +1798,7 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
         if c:
             return c
         try:
-            c = await guild.create_category(name, reason="Void_Shop v2")
+            c = await guild.create_category(name, reason="Void_Shop v5")
             created["categories"] += 1
             await asyncio.sleep(0.45)
             return c
@@ -1754,9 +1813,9 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
             if not ch:
                 try:
                     if ch_type == "voice":
-                        ch = await guild.create_voice_channel(ch_name, category=cat, reason="Void_Shop v2")
+                        ch = await guild.create_voice_channel(ch_name, category=cat, reason="Void_Shop v5")
                     else:
-                        ch = await guild.create_text_channel(ch_name, category=cat, topic=topic[:1024] if topic else None, reason="Void_Shop v2")
+                        ch = await guild.create_text_channel(ch_name, category=cat, topic=topic[:1024] if topic else None, reason="Void_Shop v5")
                     created["channels"] += 1
                     await asyncio.sleep(0.35)
                 except Exception as e:
@@ -2075,7 +2134,7 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
         ),
         color=0x2ecc71
     )
-    emb_done.set_footer(text="Void_Shop v2.0 ULTIMATE • RealVexo696")
+    emb_done.set_footer(text="Void_Shop v5.0 COSMOS • RealVexo696")
     target_channel = guild.system_channel or guild.get_channel(C("bot_commands")) or status_message.channel
     await target_channel.send(embed=emb_done)
     try:
@@ -2219,14 +2278,91 @@ async def housekeeping_loop():
         for key, ts in list(FAQ_COOLDOWNS.items()):
             if now - ts > FAQ_COOLDOWN_SECONDS * 4:
                 FAQ_COOLDOWNS.pop(key, None)
+        for key, ts in list(TICKET_REMINDER_CACHE.items()):
+            if now - ts > 60 * 60 * 24:
+                TICKET_REMINDER_CACHE.pop(key, None)
+        for key, ts in list(VOUCH_REMINDER_CACHE.items()):
+            if now - ts > 60 * 60 * 24 * 3:
+                VOUCH_REMINDER_CACHE.pop(key, None)
+
         for guild in bot.guilds:
             try:
                 await refresh_invite_cache(guild)
             except Exception:
                 pass
+            try:
+                await update_stats_channels(guild)
+            except Exception:
+                pass
+
+        async with get_db() as db:
+            cur = await db_execute(db, "SELECT channel_id, user_id, created_at FROM tickets_open WHERE closed=0")
+            ticket_rows = await cur.fetchall()
+            cur = await db_execute(db, "SELECT discord_id, product_key, delivered_at FROM deliveries ORDER BY delivered_at DESC LIMIT 100")
+            deliveries = await cur.fetchall()
+
+        for row in ticket_rows:
+            try:
+                channel_id, user_id, created_at = row[0], row[1], row[2]
+            except Exception:
+                channel_id, user_id, created_at = row['channel_id'], row['user_id'], row['created_at']
+            ch = bot.get_channel(channel_id)
+            if not ch:
+                continue
+            last_dt = parse_db_ts(created_at) or datetime.datetime.utcnow()
+            try:
+                async for msg in ch.history(limit=1):
+                    last_dt = msg.created_at.replace(tzinfo=None) if getattr(msg, 'created_at', None) else last_dt
+            except Exception:
+                pass
+            age_hours = (datetime.datetime.utcnow() - last_dt).total_seconds() / 3600
+            if age_hours >= TICKET_AUTO_ARCHIVE_HOURS:
+                member = ch.guild.get_member(user_id) or ch.guild.me
+                if TICKET_REMINDER_CACHE.get((channel_id, 'closed')):
+                    continue
+                TICKET_REMINDER_CACHE[(channel_id, 'closed')] = now
+                try:
+                    await ch.send("⏳ Dieses Ticket war sehr lange inaktiv und wird jetzt automatisch archiviert.")
+                except Exception:
+                    pass
+                try:
+                    await close_ticket_final(ch, member, closed_by_id=ch.guild.me.id if ch.guild.me else member.id, purchased=False)
+                except Exception as e:
+                    print(f"[auto close ticket] {e}")
+                continue
+            if age_hours >= TICKET_INACTIVITY_HOURS and not TICKET_REMINDER_CACHE.get((channel_id, 'remind')):
+                TICKET_REMINDER_CACHE[(channel_id, 'remind')] = now
+                try:
+                    await ch.send("⏰ Erinnerung: Dieses Ticket ist seit mehreren Stunden inaktiv. Wenn ihr Hilfe braucht, antwortet bitte hier. Andernfalls kann es automatisch archiviert werden.")
+                except Exception:
+                    pass
+
+        for row in deliveries:
+            try:
+                discord_id, product_key, delivered_at = row[0], row[1], row[2]
+            except Exception:
+                discord_id, product_key, delivered_at = row['discord_id'], row['product_key'], row['delivered_at']
+            delivered_dt = parse_db_ts(delivered_at)
+            if not delivered_dt:
+                continue
+            if (datetime.datetime.utcnow() - delivered_dt).total_seconds() < VOUCH_REMINDER_DELAY_MINUTES * 60:
+                continue
+            if VOUCH_REMINDER_CACHE.get((discord_id, product_key)):
+                continue
+            VOUCH_REMINDER_CACHE[(discord_id, product_key)] = now
+            user = bot.get_user(discord_id)
+            if not user:
+                try:
+                    user = await bot.fetch_user(discord_id)
+                except Exception:
+                    user = None
+            if user:
+                try:
+                    await user.send(f"💬 Wie gefällt dir **{product_label(product_key)}**? Wenn alles gut war, hinterlasse gern ein 5⭐ Vouch in unserem Discord für +{COIN_REWARDS['vouch_5star']} Coins.")
+                except Exception:
+                    pass
     except Exception as e:
         print(f"[housekeeping_loop] {e}")
-
 @housekeeping_loop.before_loop
 async def before_housekeeping():
     await bot.wait_until_ready()
@@ -2589,14 +2725,15 @@ def is_owner():
 
 @bot.command(name="help")
 async def help_cmd(ctx):
-    e = discord.Embed(title="🛍️ Void_Shop v2 ULTIMATE – Befehle", color=0xFF2020)
+    e = discord.Embed(title="🛍️ Void_Shop v5 COSMOS – Befehle", color=0xFF2020)
     e.add_field(name="👑 Setup", value="`!start` – Setup-Assistent mit **Abbruch / Nur Hinzufügen / Komplett neu aufsetzen**", inline=False)
     e.add_field(name="🔐 Verify", value="Verify-Button im <#{}> öffnet ein Eingabefenster für deinen Roblox @Namen\nFallback: `!verify <RobloxName>`".format(C("verify") or 0), inline=False)
-    e.add_field(name="🛍️ Shop", value="`!products` `!bundles`\n`!checkbuy` – Kauf prüfen + Auto-Delivery\n`!history [@user]` – Bestellhistorie", inline=False)
+    e.add_field(name="🛍️ Shop", value="`!products` `!bundles` `!topbuyers`\n`!checkbuy` – Kauf prüfen + Auto-Delivery\n`!history [@user]` – Bestellhistorie", inline=False)
     e.add_field(name="🪙 Coins & Invites", value="`!profile` `!coins` `!shop` `!redeem <150|300|500|800>` `!daily` `!weekly` `!coinlb` `!invites [@user]`", inline=False)
+    e.add_field(name="🏷️ Coupons", value="`!coupons` `!couponclaim CODE`\nOwner: `!couponcreate` `!coupondeactivate`", inline=False)
     e.add_field(name="🎫 Tickets", value="Ticket-Panel mit **Produkt kaufen / Support / Partnerschaft**\n`!claim` `!close` `!priority` `!ticketnote` `!notes`", inline=False)
-    e.add_field(name="👑 Owner / Management", value="`!revenue` `!stafflb` `!supportstats` `!backup` `!ticker`\nZusätzlich CRM / Tickets / Logs / Umsatz im Dashboard", inline=False)
-    e.set_footer(text=f"Void_Shop v2.0 ULTIMATE • Dashboard-Port: {DASHBOARD_PORT}")
+    e.add_field(name="👑 Owner / Management", value="`!revenue` `!stafflb` `!supportstats` `!backup` `!ticker`\nZusätzlich CRM / Tickets / Logs / Umsatz / Coupons im Dashboard", inline=False)
+    e.set_footer(text=f"Void_Shop v5.0 COSMOS • Dashboard-Port: {DASHBOARD_PORT}")
     await ctx.send(embed=e)
 
 @bot.command(name="verify")
@@ -2813,590 +2950,13 @@ async def weekly_cmd(ctx):
     else:
         await ctx.send(f"⏳ Bereits abgeholt. Nächste Weekly in {ok[1]} Tagen.")
 
-@bot.command(name="customernote")
-@commands.has_permissions(manage_messages=True)
-async def customer_note_cmd(ctx, member: discord.Member=None, *, note:str=None):
-    if not member or not note:
-        return await ctx.send("Usage: `!customernote @User deine Notiz`")
-    await add_customer_note(member.id, ctx.author.id, note)
-    await ctx.send(f"✅ Kundennotiz für {member.mention} gespeichert.")
-
-@bot.command(name="notes")
-async def notes_cmd(ctx, member: discord.Member=None):
-    if member:
-        rows = await get_customer_notes(member.id, 10)
-        desc = "\n".join([f"• <@{(r['staff_id'] if hasattr(r,'keys') else r[2])}> — {(r['note'] if hasattr(r,'keys') else r[3])[:120]}" for r in rows])
-        emb = discord.Embed(title="🗒️ Kundennotizen", description=desc or "Keine Notizen vorhanden.", color=0x95a5a6)
-        await ctx.send(embed=emb)
-    elif ctx.channel.name.startswith("ticket-"):
-        rows = await get_ticket_notes(ctx.channel.id, 10)
-        desc = "\n".join([f"• <@{(r['staff_id'] if hasattr(r,'keys') else r[2])}> — {(r['note'] if hasattr(r,'keys') else r[3])[:120]}" for r in rows])
-        emb = discord.Embed(title="🗒️ Ticket-Notizen", description=desc or "Keine Ticket-Notizen vorhanden.", color=0x95a5a6)
-        await ctx.send(embed=emb)
-    else:
-        await ctx.send("Usage: `!notes @User` oder in einem Ticket ohne User-Angabe.")
-
-@bot.command(name="ticketnote")
-@commands.has_permissions(manage_messages=True)
-async def ticketnote_cmd(ctx, *, note:str=None):
-    if not ctx.channel.name.startswith("ticket-"):
-        return await ctx.send("❌ Nur in Ticket-Kanälen nutzbar.")
-    if not note:
-        return await ctx.send("Usage: `!ticketnote deine Notiz`")
-    await add_ticket_note(ctx.channel.id, ctx.author.id, note)
-    await ctx.send("✅ Ticket-Notiz gespeichert.", delete_after=10)
-
-@bot.command(name="claim")
-async def claim_cmd(ctx):
-    if not ctx.channel.name.startswith("ticket-"):
-        return await ctx.send("❌ Nur in Ticket-Kanälen nutzbar.")
-    if not is_staff_member(ctx.author):
-        return await ctx.send("❌ Nur Staff/Admin kann claimen.")
-    ok, info = await claim_ticket(ctx.channel.id, ctx.author.id)
-    if ok:
-        await ctx.send(f"✅ {ctx.author.mention} hat dieses Ticket übernommen.")
-    else:
-        await ctx.send(f"❌ Claim nicht möglich: {info}")
-
-@bot.command(name="close")
-async def close_cmd(ctx):
-    if not ctx.channel.name.startswith("ticket-"):
-        return await ctx.send("❌ Nur in Ticket-Kanälen nutzbar.")
-    row = await get_ticket_row(ctx.channel.id)
-    if not row:
-        return await ctx.send("❌ Ticketdaten nicht gefunden.")
-    try:
-        owner_id = row[1]
-    except Exception:
-        owner_id = row['user_id']
-    if ctx.author.id != owner_id and not is_staff_member(ctx.author):
-        return await ctx.send("❌ Nur Ticket-Ersteller oder Staff kann schließen.")
-    await ctx.send("**Ticket schließen – kurze Umfrage (3 Fragen)**\n\n**Frage 1/3:**\nHaben Sie etwas gekauft?", view=SurveyQ1View(ctx.channel, owner_id, ctx.author.id))
-
-@bot.command(name="priority")
-@commands.has_permissions(manage_messages=True)
-async def priority_cmd(ctx, level:str=None):
-    if not ctx.channel.name.startswith("ticket-"):
-        return await ctx.send("❌ Nur in Ticket-Kanälen nutzbar.")
-    level = (level or '').lower()
-    if level not in {'low','normal','high','critical'}:
-        return await ctx.send("Usage: `!priority low|normal|high|critical`")
-    await set_ticket_priority(ctx.channel.id, level)
-    await ctx.send(embed=make_embed("🚦 Ticket-Priorität", f"Priorität für {ctx.channel.mention} wurde auf **{level.upper()}** gesetzt.", 0xf39c12, ctx.author))
-
-@bot.command(name="supportstats")
-async def supportstats_cmd(ctx, member: discord.Member=None):
-    target = member or ctx.author
-    async with get_db() as db:
-        cur = await db_execute(db, "SELECT tickets_claimed, tickets_closed, avg_response_sec, rating_count, CASE WHEN rating_count>0 THEN rating_sum*1.0/rating_count ELSE 0 END FROM staff_stats WHERE staff_id=?", (target.id,))
-        row = await cur.fetchone()
-    if not row:
-        return await ctx.send("Keine Support-Daten vorhanden.")
-    try:
-        claimed, closed, avg_resp, votes, avg = row[0], row[1], row[2], row[3], row[4]
-    except Exception:
-        claimed, closed, avg_resp, votes, avg = row['tickets_claimed'], row['tickets_closed'], row['avg_response_sec'], row['rating_count'], row[4]
-    emb = discord.Embed(title="👑 Support Stats", color=0x2c3e50)
-    emb.add_field(name="Supporter", value=target.mention, inline=False)
-    emb.add_field(name="Geclaimed", value=str(claimed), inline=True)
-    emb.add_field(name="Geschlossen", value=str(closed), inline=True)
-    emb.add_field(name="Ø Antwortzeit", value=f"{avg_resp or 0}s", inline=True)
-    emb.add_field(name="Bewertung", value=f"{avg:.2f} ⭐", inline=True)
-    emb.add_field(name="Votes", value=str(votes), inline=True)
+@bot.command(name="faq")
+async def faq_cmd(ctx):
+    emb = discord.Embed(title="❓ Void Shop FAQ", color=0x3498db)
+    emb.add_field(name="Verify", value=f"Gehe zu <#{C('verify') or ctx.channel.id}> und nutze den Verify-Button.", inline=False)
+    emb.add_field(name="Kaufen", value="Verify → Produkt kaufen → `!checkbuy` → Auto-Delivery per DM", inline=False)
+    emb.add_field(name="Support", value=f"Ticket-Panel in <#{C('ticket_create') or ctx.channel.id}> nutzen.", inline=False)
+    emb.add_field(name="Coins", value="Verify, Invites, Käufe, Vouches, Daily, Weekly", inline=False)
     await ctx.send(embed=emb)
 
-@bot.command(name="backup")
-@is_owner()
-async def backup_cmd(ctx):
-    data = {
-        "runtime": RUNTIME,
-        "products": PRODUCTS,
-        "bundles": BUNDLES,
-        "created_at": datetime.datetime.utcnow().isoformat()
-    }
-    os.makedirs('exports', exist_ok=True)
-    path = os.path.join('exports', f"voidshop_backup_{datetime.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json")
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    await ctx.send(file=discord.File(path))
-
-@bot.command(name="shop")
-async def coinshop_cmd(ctx):
-    bal = await get_coins(ctx.author.id)
-    emb = discord.Embed(title="🛍️ Coin-Shop", description=f"Dein Guthaben: **{bal} Coins**", color=0xFFD700)
-    for price, reward in sorted(SHOP_REWARDS.items()):
-        emb.add_field(name=f"{price} Coins → {reward['name']}", value=f"`!redeem {price}`", inline=False)
-    emb.set_footer(text="Verdiene: verify +10, invite +25, kauf +50, vouch +30, daily +5")
-    await ctx.send(embed=emb)
-
-@bot.command(name="redeem")
-async def redeem_cmd(ctx, amount:int=None):
-    if not amount or amount not in SHOP_REWARDS:
-        return await ctx.send("Verfügbar: "+", ".join(f"`!redeem {k}`" for k in SHOP_REWARDS))
-    reward = SHOP_REWARDS[amount]
-    ok = await spend_coins(ctx.author.id, amount, f"redeem_{reward['type']}")
-    if not ok:
-        bal = await get_coins(ctx.author.id)
-        return await ctx.send(f"❌ Nicht genug Coins! Du hast {bal}, brauchst {amount}.")
-    emb = discord.Embed(title="✅ Eingelöst!",
-        description=f"**{reward['name']}**\n\nEin Staff meldet sich, oder du erhältst es per DM.",
-        color=0x2ecc71)
-    await ctx.send(embed=emb)
-    log_emb = make_embed("🪙 Coin Redeem",
-        f"{ctx.author.mention} hat **{reward['name']}** für {amount} Coins eingelöst.",0xFFD700,ctx.author)
-    await send_log(bot,"coins",log_emb,discord_id=ctx.author.id)
-
-@bot.command(name="coinlb", aliases=["coinslb"])
-async def coinlb_cmd(ctx):
-    async with get_db() as db:
-        cur = await db_execute(db, "SELECT discord_id, coins, purchases FROM users ORDER BY coins DESC LIMIT 10")
-        rows = await cur.fetchall()
-    desc = ""
-    for i,row in enumerate(rows,1):
-        try: did=row[0]; coins=row[1]; pur=row[2]
-        except: did=row["discord_id"]; coins=row["coins"]; pur=row["purchases"]
-        desc += f"**#{i}** <@{did}> — **{coins}** 🪙 · {pur} Käufe\n"
-    emb = discord.Embed(title="🏆 Void-Coin Leaderboard", description=desc or "Noch niemand.", color=0xFFD700)
-    await ctx.send(embed=emb)
-
-@bot.command(name="daily")
-async def daily_cmd(ctx):
-    claimed, streak, base_reward, streak_bonus = await process_daily_claim(ctx.author.id)
-    if not claimed:
-        return await ctx.send("⏳ Schon abgeholt! Versuche es morgen erneut.")
-    extra = f"\n🔥 Streak: **{streak} Tage**" if streak else ""
-    bonus = f"\n🎁 Streak-Bonus: **+{streak_bonus}** Coins" if streak_bonus else ""
-    await ctx.send(f"✅ Daily abgeholt! +{base_reward} Coins{bonus}{extra}")
-
-@bot.command(name="revenue")
-@is_owner()
-async def revenue_cmd(ctx):
-    data = await get_revenue_summary()
-    emb = discord.Embed(title="👑 Revenue Dashboard – Owner Only", color=0x2c3e50)
-    emb.add_field(name="Heute", value=f"{data['today_robux']} R$\n{data['today_purchases']} Käufe", inline=True)
-    emb.add_field(name="Monat", value=f"{data['month_robux']} R$\n{data['month_purchases']} Käufe", inline=True)
-    emb.add_field(name="Gesamt", value=f"{data['total_robux']} R$\n{data['total_purchases']} Käufe", inline=True)
-    top_text = "\n".join([f"• {p} – {c}x – {r} R$" for p,c,r in data["top_products"]]) or "–"
-    emb.add_field(name="Top Produkte", value=top_text, inline=False)
-    await ctx.send(embed=emb, delete_after=120)
-    try: await ctx.message.delete()
-    except: pass
-
-@bot.command(name="stafflb")
-@is_owner()
-async def stafflb_cmd(ctx):
-    async with get_db() as db:
-        cur = await db_execute(db, "SELECT staff_id,tickets_claimed,tickets_closed,rating_count, CASE WHEN rating_count>0 THEN rating_sum*1.0/rating_count ELSE 0 END as avg FROM staff_stats ORDER BY tickets_closed DESC LIMIT 10")
-        rows = await cur.fetchall()
-    desc=""
-    for i,row in enumerate(rows,1):
-        try: sid,claimed,closed,rc,avg = row[0],row[1],row[2],row[3],row[4]
-        except: sid=row["staff_id"]; claimed=row["tickets_claimed"]; closed=row["tickets_closed"]; rc=row["rating_count"]; avg=row["avg"]
-        desc+=f"**#{i}** <@{sid}> – {closed} closed / {claimed} claimed · ⭐ {avg:.1f} ({rc})\n"
-    emb = discord.Embed(title="👑 Staff Leaderboard", description=desc or "Keine Daten – Staff Stats werden beim Ticket-Close automatisch getrackt.", color=0x2c3e50)
-    await ctx.send(embed=emb, delete_after=120)
-
-@bot.command(name="ticker")
-@commands.has_permissions(manage_guild=True)
-async def ticker_test(ctx):
-    ch = L("ticker")
-    if ch:
-        await send_purchase_ticker(bot, ch, ctx.author, "Premium FastFlags Paket", 250)
-        await ctx.send("✅ Test-Ticker gesendet", delete_after=5)
-    else:
-        await ctx.send("Ticker-Kanal nicht gesetzt – führe `!start` aus.", delete_after=10)
-
-# =====================================================================
-#  👑 WEB DASHBOARD
-# =====================================================================
-def run_dashboard():
-    if not DASHBOARD_ENABLED or not HAS_FLASK:
-        print("[Dashboard] OFF")
-        return
-    from flask import Flask, render_template_string, request, redirect, session, jsonify
-    app = Flask(__name__)
-    app.secret_key = DASHBOARD_SECRET
-    BASE_HTML = """<!doctype html><html lang=de><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>Void_Shop v2 Dashboard</title>
-<style>
-:root{--bg:#0b0b0f;--card:#141421;--red:#FF2020;--gold:#FFD700;--muted:#889;--green:#2ecc71;--blue:#3498db}
-*{box-sizing:border-box;font-family:Inter,Segoe UI,Arial,sans-serif}
-body{margin:0;background:var(--bg);color:#eee}
-a{color:var(--gold);text-decoration:none}
-.nav{display:flex;gap:18px;padding:14px 24px;background:#11111a;border-bottom:2px solid #1f1f2e;position:sticky;top:0;z-index:9}
-.nav b{color:var(--red);font-size:18px}
-.nav a{padding:6px 12px;border-radius:8px}
-.nav a:hover{background:#222239}
-.wrap{max-width:1350px;margin:24px auto;padding:0 20px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
-.card{background:var(--card);border:1px solid #222235;border-radius:16px;padding:18px;box-shadow:0 4px 30px #0005}
-.card h3{margin:0 0 8px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
-.big{font-size:30px;font-weight:800}
-.gold{color:var(--gold)}.red{color:var(--red)}.green{color:var(--green)}.blue{color:var(--blue)}
-table{width:100%;border-collapse:collapse;font-size:14px}
-th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #252538}
-th{color:var(--muted)}
-.badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;background:#222}
-.badge.g{background:#133d1a;color:#5feca0}
-.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-@media(max-width:900px){.two{grid-template-columns:1fr}}
-.footer{opacity:.5;text-align:center;padding:30px;font-size:12px}
-.btn{background:var(--red);color:#fff;border:none;padding:9px 15px;border-radius:10px;font-weight:600;cursor:pointer}
-input,textarea{width:100%;padding:10px;background:#0f0f18;border:1px solid #2a2a40;color:#eee;border-radius:10px}
-</style></head><body>
-<div class=nav><b>🛍️ VOID_SHOP v2</b>
-<a href="/">Dashboard</a><a href="/crm">CRM</a><a href="/products">Produkte</a><a href="/coins">Coins</a><a href="/invites">Invites</a><a href="/tickets">Tickets</a><a href="/notes">Notizen</a><a href="/logs">Logs</a><a href="/staff">Staff</a><a href="/public-shop">Public Shop</a>
-<span style="flex:1"></span><a href="/logout">Logout</a></div>
-<div class=wrap>{{ content|safe }}
-<div class=footer>Void_Shop v2.0 ULTIMATE • RealVexo696 • Companion to VOID-TOOLS v2.6 • aiosqlite={{aiosqlite}}</div>
-</div></body></html>"""
-    def page(content): return render_template_string(BASE_HTML, content=content, aiosqlite=HAS_AIOSQLITE)
-    def q(sql, args=(), one=False):
-        con = sqlite3.connect(DATABASE_PATH); con.row_factory=sqlite3.Row
-        cur = con.execute(sql, args); rv = cur.fetchall(); con.close()
-        return (rv[0] if rv else None) if one else rv
-    @app.route("/health")
-    def health():
-        return {"ok": True, "dashboard": True, "port": DASHBOARD_PORT}
-    @app.route("/status")
-    def status_page():
-        return "VOID_SHOP Dashboard ist online. Nutze /login für das Owner-Panel."
-    @app.route("/login", methods=["GET","POST"])
-    def login():
-        if request.method=="POST":
-            if request.form.get("code") in (DASHBOARD_LOGIN_CODE, str(OWNER_ID)):
-                session["owner"]=True
-                return redirect("/")
-            err="<p style=color:#ff6b6b>Falscher Code</p>"
-        else: err=""
-        return f"""<!doctype html><meta charset=utf-8><title>Void_Shop Login</title>
-<style>body{{margin:0;background:#0b0b0f;color:#eee;font-family:Inter,Segoe UI,Arial;display:grid;place-items:center;height:100vh}}
-.box{{background:#141421;padding:36px;border-radius:20px;max-width:400px;width:90%;border:1px solid #252538}}
-input{{width:100%;padding:13px;background:#0f0f18;border:1px solid #2a2a40;color:#eee;border-radius:12px;margin:10px 0;font-size:16px}}
-button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border-radius:12px;font-weight:700;font-size:16px;cursor:pointer}}
-</style>
-<div class=box><h1 style="margin:0;color:#FF2020">👑 Void_Shop v2</h1><p style="color:#889">Owner Dashboard</p>
-{err}
-<form method=post><input type=password name=code placeholder="Owner Code" autofocus>
-<button>Einloggen</button></form>
-<small style="color:#666">Login-Code wird über <code>DASHBOARD_LOGIN</code> in deiner .env gesetzt.</small></div>"""
-    @app.route("/logout")
-    def logout(): session.clear(); return redirect("/login")
-    def owner_required(f):
-        from functools import wraps
-        @wraps(f)
-        def w(*a, **kw):
-            if not session.get("owner"): return redirect("/login")
-            return f(*a, **kw)
-        return w
-    @app.route("/")
-    @owner_required
-    def index():
-        import asyncio
-        data = asyncio.run(get_revenue_summary())
-        users = q("SELECT COUNT(*) c FROM users", one=True); users = users["c"] if users else 0
-        verified = q("SELECT COUNT(*) c FROM users WHERE verified=1", one=True); verified = verified["c"] if verified else 0
-        coins_total = q("SELECT COALESCE(SUM(coins),0) s FROM users", one=True); coins_total = coins_total["s"] if coins_total else 0
-        recent = q("SELECT p.*, u.roblox_name FROM purchases p LEFT JOIN users u ON u.discord_id=p.discord_id ORDER BY p.created_at DESC LIMIT 15")
-        coin_lb = q("SELECT discord_id, coins, purchases FROM users ORDER BY coins DESC LIMIT 10")
-        scams = q("SELECT * FROM antiscam_hits ORDER BY created_at DESC LIMIT 10")
-        # staff
-        staff = q("SELECT staff_id, tickets_closed, tickets_claimed, rating_count, CASE WHEN rating_count>0 THEN CAST(rating_sum AS FLOAT)/rating_count ELSE 0 END as avg FROM staff_stats ORDER BY tickets_closed DESC LIMIT 10")
-        # open tickets
-        ot = q("SELECT COUNT(*) c FROM tickets_open WHERE closed=0", one=True); open_tickets = ot["c"] if ot else 0
-        conv = round((data["total_purchases"]/verified*100) if verified else 0,1)
-        html = f"""
-<h2>👑 Management Dashboard <span class=badge>v2.0 ULTIMATE</span> <span class=badge style="background:#133d1a;color:#5feca0">LIVE</span></h2>
-<div class=grid>
- <div class=card><h3>Heute Umsatz</h3><div class="big gold">{data['today_robux']} <span style="font-size:16px">R$</span></div>{data['today_purchases']} Käufe</div>
- <div class=card><h3>Monat Umsatz</h3><div class="big red">{data['month_robux']} R$</div>{data['month_purchases']} Käufe</div>
- <div class=card><h3>Gesamt</h3><div class=big>{data['total_robux']} R$</div>{data['total_purchases']} Käufe</div>
- <div class=card><h3>User</h3><div class="big blue">{users}</div>{verified} verifiziert</div>
- <div class=card><h3>Void-Coins</h3><div class="big gold">🪙 {coins_total}</div>im Umlauf</div>
- <div class=card><h3>Conversion</h3><div class="big green">{conv}%</div>verified → Kauf</div>
- <div class=card><h3>Offene Tickets</h3><div class="big" style="color:#f39c12">{open_tickets}</div>live</div>
- <div class=card><h3>AntiScam</h3><div class="big green">🛡️ aktiv</div>24/7 Schutz</div>
-</div>
-<div class=grid style="margin-top:16px">
- <div class=card><h3>👑 Owner-Zentrale</h3><div style="display:grid;gap:10px"><a class=btn href="/crm">CRM / Kundenprofile</a><a class=btn href="/staff">Supporter-Leaderboard</a><a class=btn href="/tickets">Ticket-Control-Center</a><a class=btn href="/logs">LogSystem 2.0</a><a class=btn href="/coins">Void-Coins</a><a class=btn href="/invites">Invite-Center</a></div></div>
- <div class=card><h3>🧩 Aktivierte Features</h3><p>✅ Auto-Delivery<br>✅ Bulletproof Bio-Code-Verify<br>✅ AntiScam / Phishing-Schild<br>✅ Live-Käufe Ticker<br>✅ Invite-Rewards & Void-Coins<br>✅ Staff-Tracking & Ratings<br>✅ CRM / Bestellhistorie / Transkripte</p></div>
-</div>
-<div class=two style="margin-top:16px">
- <div class=card><h3>📈 Top Produkte</h3><table><tr><th>Produkt</th><th>Verkäufe</th><th>Umsatz</th></tr>"""
-        for p,c,r in data["top_products"]:
-            html += f"<tr><td>{p}</td><td>{c}</td><td class=gold>{r} R$</td></tr>"
-        html += "</table></div><div class=card><h3>🪙 Coin Leaderboard</h3><table><tr><th>#</th><th>User</th><th>Coins</th></tr>"
-        for i,row in enumerate(coin_lb,1):
-            html += f"<tr><td>{i}</td><td>&lt;@{row['discord_id']}&gt;</td><td class=gold>{row['coins']}</td></tr>"
-        html += "</table></div></div>"
-        # staff leaderboard
-        html += "<div class=card style='margin-top:16px'><h3>👑 Staff Leaderboard – Mitarbeiter des Monats</h3><table><tr><th>#</th><th>Staff</th><th>Closed</th><th>Claimed</th><th>⭐</th></tr>"
-        for i,s in enumerate(staff,1):
-            html += f"<tr><td>{i}</td><td>&lt;@{s['staff_id']}&gt;</td><td>{s['tickets_closed']}</td><td>{s['tickets_claimed']}</td><td>{round(s['avg'],1) if s['avg'] else '–'}</td></tr>"
-        if not staff:
-            html += "<tr><td colspan=5 style=color:#666>Noch keine Staff-Daten – werden beim Ticket-Close automatisch getrackt.</td></tr>"
-        html += "</table></div>"
-        # recent purchases
-        html += "<div class=card style='margin-top:16px'><h3>🛍️ Live Käufe – FOMO Ticker</h3><table><tr><th>Zeit</th><th>Käufer</th><th>Produkt</th><th>R$</th></tr>"
-        for r in recent:
-            rn = f" <small>({r['roblox_name']})</small>" if r["roblox_name"] else ""
-            html += f"<tr><td>{r['created_at']}</td><td>&lt;@{r['discord_id']}&gt;{rn}</td><td>{r['product_key']}</td><td class=gold>{r['robux_price']}</td></tr>"
-        html += "</table></div>"
-        # antiscam
-        html += "<div class=card style='margin-top:16px'><h3>🚨 AntiScam – letzte Hits</h3><table><tr><th>Zeit</th><th>User</th><th>URL</th><th>Grund</th></tr>"
-        for s in scams:
-            html += f"<tr><td>{s['created_at']}</td><td>&lt;@{s['discord_id']}&gt;</td><td style='max-width:340px;overflow:hidden;text-overflow:ellipsis'>{s['url']}</td><td><span class=badge>{s['reason']}</span></td></tr>"
-        if not scams: html += "<tr><td colspan=4 style=color:#666>Keine Scam-Versuche – Schild hält! 🛡️</td></tr>"
-        html += "</table></div>"
-        return page(html)
-    @app.route("/crm")
-    @owner_required
-    def crm_page():
-        rows = q("""
-            SELECT u.discord_id, u.roblox_name, u.coins, u.purchases, u.total_spent_robux, u.joined_at, u.verified_at, u.last_activity_at,
-                   (SELECT COUNT(*) FROM tickets_open t WHERE t.user_id=u.discord_id AND t.closed=0) AS open_tickets
-            FROM users u
-            ORDER BY u.total_spent_robux DESC, u.purchases DESC, u.coins DESC
-            LIMIT 200
-        """)
-        html = "<h2>👑 CRM / Kundenverwaltung</h2><div class=card><table><tr><th>User</th><th>Roblox</th><th>Käufe</th><th>R$</th><th>Coins</th><th>Offene Tickets</th><th>Letzte Aktivität</th><th>Profil</th></tr>"
-        for r in rows:
-            html += f"<tr><td>&lt;@{r['discord_id']}&gt;</td><td>{r['roblox_name'] or '–'}</td><td>{r['purchases']}</td><td>{r['total_spent_robux']}</td><td class=gold>{r['coins']}</td><td>{r['open_tickets']}</td><td>{r['last_activity_at'] or r['joined_at'] or '–'}</td><td><a href='/crm/{r['discord_id']}'>Öffnen</a></td></tr>"
-        if not rows:
-            html += "<tr><td colspan=8 style=color:#666>Noch keine Kundendaten vorhanden.</td></tr>"
-        html += "</table></div>"
-        return page(html)
-    @app.route("/crm/<int:discord_id>")
-    @owner_required
-    def crm_detail_page(discord_id:int):
-        user = q("SELECT * FROM users WHERE discord_id=?", (discord_id,), one=True)
-        if not user:
-            return page("<div class=card><h2>Kunde nicht gefunden</h2></div>")
-        orders = q("SELECT product_key, robux_price, order_code, created_at FROM purchases WHERE discord_id=? ORDER BY created_at DESC LIMIT 100", (discord_id,))
-        tickets = q("SELECT channel_id, type, created_at, closed FROM tickets_open WHERE user_id=? ORDER BY created_at DESC LIMIT 50", (discord_id,))
-        notes = q("SELECT * FROM customer_notes WHERE discord_id=? ORDER BY created_at DESC LIMIT 20", (discord_id,))
-        html = f"<h2>🧾 Kundenprofil – &lt;@{discord_id}&gt;</h2><div class=grid>"
-        html += f"<div class=card><h3>Roblox</h3><div class=big>{user['roblox_name'] or '–'}</div></div>"
-        html += f"<div class=card><h3>Käufe</h3><div class=big>{user['purchases']}</div></div>"
-        html += f"<div class=card><h3>Gesamtumsatz</h3><div class='big gold'>{user['total_spent_robux']} R$</div></div>"
-        html += f"<div class=card><h3>Coins</h3><div class='big gold'>{user['coins']}</div></div></div>"
-        html += "<div class=two style='margin-top:16px'><div class=card><h3>Bestellhistorie</h3><table><tr><th>Zeit</th><th>Produkt</th><th>R$</th><th>Order-ID</th></tr>"
-        for o in orders:
-            html += f"<tr><td>{o['created_at']}</td><td>{o['product_key']}</td><td>{o['robux_price']}</td><td>{o['order_code'] or '–'}</td></tr>"
-        if not orders:
-            html += "<tr><td colspan=4 style=color:#666>Keine Bestellungen vorhanden.</td></tr>"
-        html += "</table></div><div class=card><h3>Ticket-Historie</h3><table><tr><th>Zeit</th><th>Typ</th><th>Status</th></tr>"
-        for t in tickets:
-            html += f"<tr><td>{t['created_at']}</td><td>{t['type']}</td><td>{'offen' if not t['closed'] else 'geschlossen'}</td></tr>"
-        if not tickets:
-            html += "<tr><td colspan=3 style=color:#666>Keine Tickets vorhanden.</td></tr>"
-        html += "</table></div></div>"
-        html += "<div class=card style='margin-top:16px'><h3>Kundennotizen</h3><table><tr><th>Zeit</th><th>Staff</th><th>Notiz</th></tr>"
-        for n in notes:
-            html += f"<tr><td>{n['created_at']}</td><td>&lt;@{n['staff_id']}&gt;</td><td>{(n['note'] or '')[:240]}</td></tr>"
-        if not notes:
-            html += "<tr><td colspan=3 style=color:#666>Keine Kundennotizen vorhanden.</td></tr>"
-        html += "</table></div>"
-        return page(html)
-    @app.route("/notes")
-    @owner_required
-    def notes_page():
-        notes = q("SELECT * FROM customer_notes ORDER BY created_at DESC LIMIT 200")
-        tnotes = q("SELECT * FROM ticket_notes ORDER BY created_at DESC LIMIT 200")
-        html = "<h2>🗒️ Notizen-Zentrale</h2><div class=two><div class=card><h3>Kundennotizen</h3><table><tr><th>Zeit</th><th>Kunde</th><th>Staff</th><th>Notiz</th></tr>"
-        for n in notes:
-            html += f"<tr><td>{n['created_at']}</td><td>&lt;@{n['discord_id']}&gt;</td><td>&lt;@{n['staff_id']}&gt;</td><td>{(n['note'] or '')[:180]}</td></tr>"
-        if not notes:
-            html += "<tr><td colspan=4 style=color:#666>Keine Kundennotizen vorhanden.</td></tr>"
-        html += "</table></div><div class=card><h3>Ticket-Notizen</h3><table><tr><th>Zeit</th><th>Channel</th><th>Staff</th><th>Notiz</th></tr>"
-        for n in tnotes:
-            html += f"<tr><td>{n['created_at']}</td><td>#{n['channel_id']}</td><td>&lt;@{n['staff_id']}&gt;</td><td>{(n['note'] or '')[:180]}</td></tr>"
-        if not tnotes:
-            html += "<tr><td colspan=4 style=color:#666>Keine Ticket-Notizen vorhanden.</td></tr>"
-        html += "</table></div></div>"
-        return page(html)
-    @app.route("/public-shop")
-    def public_shop_page():
-        html = "<h2>🛍️ Void Shop – Public Shop Page</h2><div class=grid>"
-        for k, p in PRODUCTS.items():
-            html += f"<div class=card><h3>{p['name']}</h3><div class='big gold'>{p['robux_price']} R$</div><p>Gamepass: {p['gamepass_id']}</p><p>{(p.get('deliver',{}).get('message','') or 'Premium Produkt')[:180]}</p></div>"
-        html += "</div><div class=card style='margin-top:16px'><h3>Bundles</h3><table><tr><th>Name</th><th>Preis</th><th>Inhalt</th></tr>"
-        for _, b in BUNDLES.items():
-            items = ", ".join(product_label(i) for i in b['items'])
-            html += f"<tr><td>{b['name']}</td><td>{b['price']} R$</td><td>{items}</td></tr>"
-        html += "</table></div>"
-        return page(html)
-    @app.route("/products")
-    @owner_required
-    def products_page():
-        import json
-        pretty = json.dumps(PRODUCTS, indent=2, ensure_ascii=False)
-        bundles = json.dumps(BUNDLES, indent=2, ensure_ascii=False)
-        html = f"""<h2>🛍️ Produkt-Manager – Auto-Delivery</h2>
-<div class=card><p>Produkte sind in v2 ULTIMATE direkt im Code <code>PRODUCTS = {{...}}</code>.<br>
-Ändere Gamepass IDs & Download-Links dort.</p>
-<pre style="background:#0f0f18;padding:16px;border-radius:12px;overflow:auto;max-height:420px;font-size:12px">{pretty}</pre>
-<h3 style='margin-top:16px'>Bundles</h3>
-<pre style="background:#0f0f18;padding:16px;border-radius:12px;overflow:auto;max-height:260px;font-size:12px">{bundles}</pre>
-<a href="/" class=btn>← Dashboard</a></div>"""
-        return page(html)
-    @app.route("/coins")
-    @owner_required
-    def coins_page():
-        rows = q("SELECT discord_id, coins, purchases, total_spent_robux, roblox_name FROM users ORDER BY coins DESC LIMIT 120")
-        ledger = q("SELECT * FROM coins_ledger ORDER BY created_at DESC LIMIT 200")
-        html = "<h2>🪙 Void-Coins Economy</h2><div class=two>"
-        html += "<div class=card><h3>Leaderboard</h3><table><tr><th>User</th><th>Coins</th><th>Käufe</th><th>R$</th></tr>"
-        for r in rows:
-            html += f"<tr><td>&lt;@{r['discord_id']}&gt; {r['roblox_name'] or ''}</td><td class=gold>{r['coins']}</td><td>{r['purchases']}</td><td>{r['total_spent_robux']}</td></tr>"
-        html += "</table></div><div class=card><h3>Ledger</h3><table><tr><th>Zeit</th><th>User</th><th>±</th><th>Grund</th></tr>"
-        for l in ledger:
-            col = "green" if l["amount"]>0 else "red"
-            html += f"<tr><td>{l['created_at']}</td><td>&lt;@{l['discord_id']}&gt;</td><td class={col}>{l['amount']:+d}</td><td>{l['reason']}</td></tr>"
-        html += "</table></div></div>"
-        return page(html)
-    @app.route("/logs")
-    @owner_required
-    def logs_page():
-        t = request.args.get("type","")
-        if t:
-            rows = q("SELECT * FROM logs WHERE log_type=? ORDER BY created_at DESC LIMIT 400", (t,))
-        else:
-            rows = q("SELECT * FROM logs ORDER BY created_at DESC LIMIT 400")
-        types = [r["log_type"] for r in q("SELECT DISTINCT log_type FROM logs")]
-        filt = " ".join([f"<a class=badge href=/logs?type={x}>{x}</a>" for x in types]) + " <a class=badge href=/logs>alle</a>"
-        html = f"<h2>📜 LogSystem 2.0 – Kommandozentrale</h2><div class=card style='margin-bottom:12px'>{filt}<br><br><small>{len(LOG_CHANNEL_DEFS)} Kanäle: join · leave · voice · message · invite · shop · verify · antiscam · ticket · coins · mod · system · ticker · bot · owner</small></div>"
-        html += "<div class=card><table><tr><th>Zeit</th><th>Typ</th><th>User</th><th>Channel</th><th>Content</th></tr>"
-        for r in rows:
-            uid = f"&lt;@{r['discord_id']}&gt;" if r["discord_id"] else ""
-            ch = f"#{r['channel_id']}" if r["channel_id"] else ""
-            cont = (r["content"] or "")[:160]
-            html += f"<tr><td>{r['created_at']}</td><td><span class=badge>{r['log_type']}</span></td><td>{uid}</td><td>{ch}</td><td>{cont}</td></tr>"
-        html += "</table></div>"
-        return page(html)
-    @app.route("/invites")
-    @owner_required
-    def invites_page():
-        rows = q("SELECT inviter_id, COUNT(*) as total FROM invites WHERE rewarded=1 GROUP BY inviter_id ORDER BY total DESC LIMIT 200")
-        recent = q("SELECT inviter_id, invited_id, invite_code, joined_at FROM invites ORDER BY joined_at DESC LIMIT 100")
-        html = "<h2>🎁 Invite Center</h2><div class=two><div class=card><h3>Leaderboard</h3><table><tr><th>#</th><th>User</th><th>Invites</th></tr>"
-        for i, r in enumerate(rows, 1):
-            html += f"<tr><td>{i}</td><td>&lt;@{r['inviter_id']}&gt;</td><td>{r['total']}</td></tr>"
-        if not rows:
-            html += "<tr><td colspan=3 style=color:#666>Noch keine Invite-Daten.</td></tr>"
-        html += "</table></div><div class=card><h3>Letzte Invite-Joins</h3><table><tr><th>Zeit</th><th>Inviter</th><th>Neuer User</th><th>Code</th></tr>"
-        for r in recent:
-            html += f"<tr><td>{r['joined_at']}</td><td>&lt;@{r['inviter_id']}&gt;</td><td>&lt;@{r['invited_id']}&gt;</td><td>{r['invite_code'] or '–'}</td></tr>"
-        if not recent:
-            html += "<tr><td colspan=4 style=color:#666>Noch keine Invite-Logs vorhanden.</td></tr>"
-        html += "</table></div></div>"
-        return page(html)
-    @app.route("/tickets")
-    @owner_required
-    def tickets_page():
-        rows = q("""
-            SELECT t.channel_id, t.user_id, t.type, t.created_at, t.closed,
-                   m.claimed_by, m.claimed_at, m.first_staff_response_at, m.closer_id, m.closed_at, m.survey_product, m.survey_stars, m.priority,
-                   tt.file_path
-            FROM tickets_open t
-            LEFT JOIN ticket_metrics m ON m.channel_id=t.channel_id
-            LEFT JOIN ticket_transcripts tt ON tt.channel_id=t.channel_id
-            ORDER BY t.closed ASC, t.created_at DESC
-            LIMIT 200
-        """)
-        html = "<h2>🎫 Ticket Control Center</h2><div class=card><table><tr><th>Status</th><th>User</th><th>Typ</th><th>Priorität</th><th>Claimed By</th><th>First Response</th><th>Produkt</th><th>⭐</th><th>Transcript</th><th>Erstellt</th></tr>"
-        for r in rows:
-            status = "🟢 Offen" if not r["closed"] else "⚫ Geschlossen"
-            claimed = f"&lt;@{r['claimed_by']}&gt;" if r["claimed_by"] else "–"
-            first_response = r["first_staff_response_at"] or "–"
-            product = r["survey_product"] or "–"
-            stars = r["survey_stars"] or "–"
-            priority = (r["priority"] or "normal").upper()
-            transcript = r["file_path"] or "–"
-            html += f"<tr><td>{status}</td><td>&lt;@{r['user_id']}&gt;</td><td>{r['type']}</td><td>{priority}</td><td>{claimed}</td><td>{first_response}</td><td>{product}</td><td>{stars}</td><td>{transcript}</td><td>{r['created_at']}</td></tr>"
-        if not rows:
-            html += "<tr><td colspan=10 style=color:#666>Noch keine Ticket-Daten vorhanden.</td></tr>"
-        html += "</table></div>"
-        return page(html)
-    @app.route("/staff")
-    @owner_required
-    def staff_page():
-        staff = q("SELECT staff_id, tickets_claimed, tickets_closed, avg_response_sec, rating_sum, rating_count, CASE WHEN rating_count>0 THEN CAST(rating_sum AS FLOAT)/rating_count ELSE 0 END as avg FROM staff_stats ORDER BY tickets_closed DESC, avg DESC")
-        html = "<h2>👑 Supporter-Leaderboard – Mitarbeiter des Monats</h2><div class=card>"
-        html += "<table><tr><th>#</th><th>Staff</th><th>Tickets Closed</th><th>Claimed</th><th>Ø Antwortzeit</th><th>Bewertung ⭐</th><th>Votes</th></tr>"
-        for i,s in enumerate(staff,1):
-            medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"#{i}"
-            resp = f"{int(s['avg_response_sec'])}s" if s['avg_response_sec'] else "–"
-            html += f"<tr><td>{medal}</td><td>&lt;@{s['staff_id']}&gt;</td><td><b>{s['tickets_closed']}</b></td><td>{s['tickets_claimed']}</td><td>{resp}</td><td>{round(s['avg'],2) if s['avg'] else '–'} ⭐</td><td>{s['rating_count']}</td></tr>"
-        if not staff:
-            html += "<tr><td colspan=7 style=color:#666>Noch keine Daten. Staff-Stats werden beim Ticket-Close automatisch erfasst.</td></tr>"
-        html += "</table><br><p><b>Mitarbeiter des Monats</b> wird automatisch an Platz #1 vergeben – perfekt für Monats-Belohnung!</p></div>"
-        return page(html)
-    @app.route("/api/revenue")
-    @owner_required
-    def api_revenue():
-        import asyncio
-        return jsonify(asyncio.run(get_revenue_summary()))
-    print(f"[*] Void_Shop v2 Dashboard → http://{DASHBOARD_HOST}:{DASHBOARD_PORT}  Login: {DASHBOARD_LOGIN_CODE}")
-    app.run(host=DASHBOARD_HOST, port=DASHBOARD_PORT, debug=False, use_reloader=False)
-
-# =====================================================================
-#  🚀 START
-# =====================================================================
-async def main():
-    await init_db()
-    # persistente Views registrieren – wichtig für Buttons nach Restart
-    try:
-        bot.add_view(TicketPanelView())
-        bot.add_view(TicketControlView())
-        bot.add_view(OneClickVerifyView())
-    except Exception as e:
-        print(f"[views] {e}")
-    if not TOKEN or TOKEN.startswith("PUT_"):
-        print("""
-╔══════════════════════════════════════════════════════════════╗
-║  ❌ DISCORD_TOKEN fehlt!                                   ║
-║                                                              ║
-║  Trage deinen Token in die .env ein:                        ║
-║    DISCORD_TOKEN=xxx                                        ║
-║    GUILD_ID=123456789                                       ║
-║    OWNER_ID=123456789                                       ║
-║    DASHBOARD_LOGIN=dein-login-code                          ║
-║                                                              ║
-║  Danach kannst du `!start` ausführen.                       ║
-║  Das Dashboard bleibt bis dahin trotzdem online.            ║
-╚══════════════════════════════════════════════════════════════╝
-""")
-        while DASHBOARD_ENABLED and HAS_FLASK:
-            await asyncio.sleep(3600)
-        await asyncio.sleep(2)
-        sys.exit(0)
-    # Stats / Housekeeping Loops starten
-    if not stats_loop.is_running():
-        try: stats_loop.start()
-        except: pass
-    if not housekeeping_loop.is_running():
-        try: housekeeping_loop.start()
-        except: pass
-    async with bot:
-        await bot.start(TOKEN)
-
-if __name__ == "__main__":
-    if DASHBOARD_ENABLED and HAS_FLASK:
-        t = threading.Thread(target=run_dashboard, daemon=True, name="VoidShopDash")
-        t.start()
-        time.sleep(1.0)
-    else:
-        print("[Dashboard] OFF – pip install Flask um zu aktivieren")
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n[+] Shutdown by user.")
-        sys.exit(0)
-    except Exception as e:
-        import traceback
-        print("\n[FATAL] Bot crashed:")
-        traceback.print_exc()
-        print("\n[!] NOT restarting automatically – fix the error above.")
-        print("    pip install discord.py aiohttp aiosqlite Flask python-dotenv")
-        sys.exit(1)
+@bot.com
