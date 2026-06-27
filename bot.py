@@ -2351,6 +2351,7 @@ async def on_message(message):
                     )
                     await message.channel.send(embed=warn_em, delete_after=10)
                     db.add_scam_block()
+                    db.add_log('security', f'Scam-Link von {message.author.name} in #{message.channel.name} blockiert')
 
                     sec_log = discord.utils.get(message.guild.text_channels, name="🚨│security-logs") or discord.utils.get(message.guild.text_channels, name="security-logs")
                     if sec_log:
@@ -2386,6 +2387,7 @@ async def on_message_delete(message):
             author_user=message.author,
             bot_user=bot.user
         )
+        db.add_log('message', f'Nachricht in #{message.channel.name} gelöscht')
         await log_channel.send(embed=embed)
 
 @bot.event
@@ -2407,6 +2409,7 @@ async def on_message_edit(before, after):
             author_user=before.author,
             bot_user=bot.user
         )
+        db.add_log('message', f'Nachricht von {before.author.name} in #{before.channel.name} bearbeitet')
         await log_channel.send(embed=embed)
 
 @bot.event
@@ -2432,6 +2435,7 @@ async def on_guild_channel_create(channel):
             author_user=moderator if moderator else bot.user,
             bot_user=bot.user
         )
+        db.add_log('system', f'Kanal #{channel.name} erstellt')
         await log_channel.send(embed=embed)
 
 @bot.event
@@ -2456,6 +2460,7 @@ async def on_guild_channel_delete(channel):
             author_user=moderator if moderator else bot.user,
             bot_user=bot.user
         )
+        db.add_log('system', f'Kanal #{channel.name} gelöscht')
         await log_channel.send(embed=embed)
 
 @bot.event
@@ -2480,6 +2485,7 @@ async def on_guild_role_create(role):
             author_user=moderator if moderator else bot.user,
             bot_user=bot.user
         )
+        db.add_log('system', f'Rolle @{role.name} erstellt')
         await log_channel.send(embed=embed)
 
 @bot.event
@@ -2504,6 +2510,7 @@ async def on_guild_role_delete(role):
             author_user=moderator if moderator else bot.user,
             bot_user=bot.user
         )
+        db.add_log('system', f'Rolle @{role.name} gelöscht')
         await log_channel.send(embed=embed)
 
 @bot.event
@@ -2515,6 +2522,7 @@ async def on_voice_state_update(member, before, after):
     if not log_channel:
         return
 
+    db.add_log('voice', f'{member.name} änderte Sprachkanal')
     if before.channel is None and after.channel is not None:
         embed = create_prestige_embed(
             title="🔊 Voice-Kanal betreten",
@@ -2596,6 +2604,7 @@ async def on_member_join(member):
     except Exception:
         pass
 
+    db.add_log('join_leave', f'{member.name} trat dem Server bei')
     if log_channel:
         embed = create_prestige_embed(
             title="📥 Mitglied beigetreten",
@@ -2679,6 +2688,7 @@ async def on_member_remove(member):
     except Exception:
         pass
 
+    db.add_log('join_leave', f'{member.name} verließ den Server')
     if kicked_by:
         log_channel = discord.utils.get(guild.text_channels, name="🔨│ban-kick-logs")
         if log_channel:
@@ -2733,6 +2743,7 @@ async def on_member_ban(guild, user):
         author_user=banned_by if banned_by else user,
         bot_user=bot.user
     )
+    db.add_log('ban_kick', f'{user.name} wurde gebannt')
     await log_channel.send(embed=embed)
 
 @bot.event
@@ -2819,4 +2830,3 @@ if __name__ == "__main__":
             logger.error("FEHLER: Der angegebene Bot-Token ist ungültig! Bitte überprüfe dein 'DISCORD_TOKEN' Secret in Railway.")
         except Exception as e:
             logger.error(f"Fehler beim Starten des Bots: {e}")
-
