@@ -6,7 +6,7 @@ RealVexo696 / Void_Shop
 Companion to VOID-TOOLS v2.6 by V0id-v2
 
 v2.0 – 27.06.2026 ULTIMATE
-- !start → erstellt automatisch ~30 Kanäle + erweitertes LogSystem + Shop-Struktur
+- !start → erstellt automatisch 60+ Kanäle + erweitertes LogSystem + Shop-Struktur
 - Ticket-System: 🛒 Produkt kaufen / 💬 Allgemeiner Support / 🤝 Partnerschaft
 - Ticket-Close Survey: 3 Fragen
   Q1: Haben Sie etwas gekauft? Ja/Nein
@@ -235,6 +235,22 @@ SHOP_REWARDS = {
     500: {"name":"VIP Role 30 Tage","type":"role"},
     800: {"name":"Premium FastFlags Paket","type":"product"},
 }
+BUNDLES = {
+    "starter_pro": {"name": "Starter Pro Bundle", "items": ["starter_bundle", "tshirt_template"], "price": 175},
+    "graphics_combo": {"name": "Graphics Combo", "items": ["fastflags_premium", "sky"], "price": 399},
+    "ultimate_combo": {"name": "Ultimate Combo", "items": ["fastflags_ultra", "sky", "anti_alt_ban"], "price": 999},
+}
+DAILY_STREAK_BONUSES = {3: 10, 7: 25, 14: 50, 30: 100}
+WEEKLY_REWARD = 25
+RAID_JOIN_THRESHOLD = 7
+RAID_JOIN_WINDOW = 30
+FAQ_COOLDOWN_SECONDS = 60
+FAQ_KEYWORDS = {
+    "buy": ["wie kaufen", "how to buy", "kaufen", "buy", "checkbuy"],
+    "verify": ["verify", "verifizieren", "roblox name", "roblox-name"],
+    "delivery": ["dm", "download", "nicht bekommen", "delivery", "lieferung"],
+    "ticket": ["ticket", "support", "hilfe", "partnerschaft", "partnership"],
+}
 
 SAFE_DOMAINS = [
     "roblox.com","www.roblox.com","web.roblox.com",
@@ -255,7 +271,7 @@ SUSPICIOUS_KEYWORDS = [
 # =====================================================================
 DB_SCHEMA = """
 PRAGMA journal_mode=WAL;
-CREATE TABLE IF NOT EXISTS users(discord_id INTEGER PRIMARY KEY, roblox_id INTEGER, roblox_name TEXT, verified INTEGER DEFAULT 0, coins INTEGER DEFAULT 0, total_spent_robux INTEGER DEFAULT 0, purchases INTEGER DEFAULT 0, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, verified_at TIMESTAMP, last_activity_at TIMESTAMP);
+CREATE TABLE IF NOT EXISTS users(discord_id INTEGER PRIMARY KEY, roblox_id INTEGER, roblox_name TEXT, verified INTEGER DEFAULT 0, coins INTEGER DEFAULT 0, total_spent_robux INTEGER DEFAULT 0, purchases INTEGER DEFAULT 0, joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, verified_at TIMESTAMP, last_activity_at TIMESTAMP, daily_streak INTEGER DEFAULT 0, last_daily_at TIMESTAMP, last_weekly_at TIMESTAMP);
 CREATE TABLE IF NOT EXISTS verify_codes(discord_id INTEGER PRIMARY KEY, roblox_id INTEGER, roblox_name TEXT, code TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY AUTOINCREMENT, discord_id INTEGER, roblox_id INTEGER, product_key TEXT, gamepass_id INTEGER, robux_price INTEGER, order_code TEXT, delivered INTEGER DEFAULT 0, delivery_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS deliveries(id INTEGER PRIMARY KEY AUTOINCREMENT, purchase_id INTEGER, discord_id INTEGER, product_key TEXT, delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, dm_message_id TEXT, success INTEGER DEFAULT 1);
@@ -267,8 +283,10 @@ CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY AUTOINCREMENT, log_type T
 CREATE TABLE IF NOT EXISTS vouches(id INTEGER PRIMARY KEY AUTOINCREMENT, discord_id INTEGER, stars INTEGER, message TEXT, coins_awarded INTEGER DEFAULT 0, product TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS revenue_daily(day TEXT PRIMARY KEY, robux INTEGER DEFAULT 0, purchases INTEGER DEFAULT 0, customers INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS tickets_open(channel_id INTEGER PRIMARY KEY, user_id INTEGER, type TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, closed INTEGER DEFAULT 0);
-CREATE TABLE IF NOT EXISTS ticket_metrics(channel_id INTEGER PRIMARY KEY, claimed_by INTEGER, claimed_at TIMESTAMP, first_staff_response_at TIMESTAMP, closer_id INTEGER, closed_at TIMESTAMP, survey_product TEXT, survey_stars INTEGER);
+CREATE TABLE IF NOT EXISTS ticket_metrics(channel_id INTEGER PRIMARY KEY, claimed_by INTEGER, claimed_at TIMESTAMP, first_staff_response_at TIMESTAMP, closer_id INTEGER, closed_at TIMESTAMP, survey_product TEXT, survey_stars INTEGER, priority TEXT DEFAULT "normal");
 CREATE TABLE IF NOT EXISTS ticket_transcripts(channel_id INTEGER PRIMARY KEY, file_path TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS customer_notes(id INTEGER PRIMARY KEY AUTOINCREMENT, discord_id INTEGER, staff_id INTEGER, note TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS ticket_notes(id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id INTEGER, staff_id INTEGER, note TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS server_config(k TEXT PRIMARY KEY, v TEXT);
 """
 
@@ -324,7 +342,11 @@ async def init_db():
         for sql in [
             "ALTER TABLE invites ADD COLUMN invite_code TEXT",
             "ALTER TABLE users ADD COLUMN last_activity_at TIMESTAMP",
-            "ALTER TABLE purchases ADD COLUMN order_code TEXT"
+            "ALTER TABLE users ADD COLUMN daily_streak INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN last_daily_at TIMESTAMP",
+            "ALTER TABLE users ADD COLUMN last_weekly_at TIMESTAMP",
+            "ALTER TABLE purchases ADD COLUMN order_code TEXT",
+            "ALTER TABLE ticket_metrics ADD COLUMN priority TEXT DEFAULT 'normal'"
         ]:
             try:
                 await db_execute(db, sql)
@@ -841,6 +863,184 @@ async def save_ticket_transcript(channel:discord.TextChannel)->str|None:
     except Exception as e:
         print(f"[transcript save] {e}")
         return None
+
+def role_by_exact_name(guild:discord.Guild, name:str):
+    return discord.utils.get(guild.roles, name=name)
+
+def date_from_db(value):
+    dt = parse_db_ts(value)
+    return dt.date() if dt else None
+
+async def sync_customer_roles(member:discord.Member):
+    try:
+        async with get_db() as db:
+            cur = await db_execute(db, "SELECT purchases, total_spent_robux FROM users WHERE discord_id=?", (member.id,))
+            row = await cur.fetchone()
+        if not row:
+            return
+        try:
+            purchases, spent = int(row[0] or 0), int(row[1] or 0)
+        except Exception:
+            purchases, spent = int(row["purchases"] or 0), int(row["total_spent_robux"] or 0)
+        mapping = [
+            (ROL("customer"), purchases >= 1),
+            (ROL("vip"), spent >= 1500),
+            (role_by_exact_name(member.guild, "⭐ Premium"), spent >= 1000),
+            (role_by_exact_name(member.guild, "🌟 Stammkunde"), spent >= 500),
+            (role_by_exact_name(member.guild, "🏆 Top Käufer"), spent >= 2500),
+        ]
+        for role_obj_or_id, should_have in mapping:
+            role = member.guild.get_role(role_obj_or_id) if isinstance(role_obj_or_id, int) else role_obj_or_id
+            if not role:
+                continue
+            if should_have and role not in member.roles:
+                try: await member.add_roles(role, reason="Void_Shop Customer Tier Sync")
+                except Exception: pass
+            if not should_have and role in member.roles and role.id not in {ROL("customer"), ROL("vip")}:
+                try: await member.remove_roles(role, reason="Void_Shop Customer Tier Sync")
+                except Exception: pass
+    except Exception as e:
+        print(f"[sync_customer_roles] {e}")
+
+async def get_profile_data(discord_id:int):
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT * FROM users WHERE discord_id=?", (discord_id,))
+        user = await cur.fetchone()
+        cur = await db_execute(db, "SELECT COUNT(*) FROM invites WHERE inviter_id=? AND rewarded=1", (discord_id,))
+        invites = await cur.fetchone()
+        cur = await db_execute(db, "SELECT COUNT(*) FROM tickets_open WHERE user_id=? AND closed=0", (discord_id,))
+        open_tickets = await cur.fetchone()
+    return user, int(invites[0] if invites else 0), int(open_tickets[0] if open_tickets else 0)
+
+async def add_customer_note(target_id:int, staff_id:int, note:str):
+    async with get_db() as db:
+        await db_execute(db, "INSERT INTO customer_notes(discord_id, staff_id, note) VALUES(?,?,?)", (target_id, staff_id, note[:1500]))
+        await db_commit(db)
+
+async def get_customer_notes(target_id:int, limit:int=15):
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT * FROM customer_notes WHERE discord_id=? ORDER BY created_at DESC LIMIT ?", (target_id, limit))
+        return await cur.fetchall()
+
+async def add_ticket_note(channel_id:int, staff_id:int, note:str):
+    async with get_db() as db:
+        await db_execute(db, "INSERT INTO ticket_notes(channel_id, staff_id, note) VALUES(?,?,?)", (channel_id, staff_id, note[:1500]))
+        await db_commit(db)
+
+async def get_ticket_notes(channel_id:int, limit:int=15):
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT * FROM ticket_notes WHERE channel_id=? ORDER BY created_at DESC LIMIT ?", (channel_id, limit))
+        return await cur.fetchall()
+
+async def set_ticket_priority(channel_id:int, priority:str):
+    async with get_db() as db:
+        await db_execute(db, "INSERT OR IGNORE INTO ticket_metrics(channel_id) VALUES(?)", (channel_id,))
+        await db_execute(db, "UPDATE ticket_metrics SET priority=? WHERE channel_id=?", (priority, channel_id))
+        await db_commit(db)
+
+async def get_ticket_priority(channel_id:int)->str:
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT priority FROM ticket_metrics WHERE channel_id=?", (channel_id,))
+        row = await cur.fetchone()
+        if not row:
+            return "normal"
+        try:
+            return row[0] or "normal"
+        except Exception:
+            return row["priority"] or "normal"
+
+async def process_daily_claim(discord_id:int):
+    today = datetime.datetime.utcnow().date()
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT daily_streak, last_daily_at FROM users WHERE discord_id=?", (discord_id,))
+        row = await cur.fetchone()
+        streak = 0
+        last_daily = None
+        if row:
+            try:
+                streak, last_daily = int(row[0] or 0), row[1]
+            except Exception:
+                streak, last_daily = int(row["daily_streak"] or 0), row["last_daily_at"]
+        last_date = date_from_db(last_daily)
+        if last_date == today:
+            return False, streak, 0, 0
+        if last_date == (today - datetime.timedelta(days=1)):
+            streak += 1
+        else:
+            streak = 1
+        bonus = DAILY_STREAK_BONUSES.get(streak, 0)
+        await db_execute(db, "INSERT OR IGNORE INTO users(discord_id, joined_at, last_activity_at, daily_streak) VALUES(?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)", (discord_id,))
+        await db_execute(db, "UPDATE users SET daily_streak=?, last_daily_at=CURRENT_TIMESTAMP, last_activity_at=CURRENT_TIMESTAMP WHERE discord_id=?", (streak, discord_id))
+        await db_commit(db)
+    await add_coins(discord_id, COIN_REWARDS["daily"] + bonus, "daily", f"streak={streak}")
+    return True, streak, COIN_REWARDS["daily"], bonus
+
+async def process_weekly_claim(discord_id:int):
+    today = datetime.datetime.utcnow().date()
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT last_weekly_at FROM users WHERE discord_id=?", (discord_id,))
+        row = await cur.fetchone()
+        last_weekly = row[0] if row else None
+        last_date = date_from_db(last_weekly)
+        if last_date and (today - last_date).days < 7:
+            return False, max(0, 7 - (today - last_date).days)
+        await db_execute(db, "INSERT OR IGNORE INTO users(discord_id, joined_at, last_activity_at) VALUES(?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", (discord_id,))
+        await db_execute(db, "UPDATE users SET last_weekly_at=CURRENT_TIMESTAMP, last_activity_at=CURRENT_TIMESTAMP WHERE discord_id=?", (discord_id,))
+        await db_commit(db)
+    await add_coins(discord_id, WEEKLY_REWARD, "weekly")
+    return True, WEEKLY_REWARD
+
+def should_trigger_faq(user_id:int, key:str):
+    now = time.time()
+    last = FAQ_COOLDOWNS.get((user_id, key), 0)
+    if now - last < FAQ_COOLDOWN_SECONDS:
+        return False
+    FAQ_COOLDOWNS[(user_id, key)] = now
+    return True
+
+async def maybe_send_faq(message:discord.Message):
+    content = (message.content or '').lower()
+    if len(content) > 250:
+        return False
+    for key, keywords in FAQ_KEYWORDS.items():
+        if any(k in content for k in keywords) and should_trigger_faq(message.author.id, key):
+            if key == "buy":
+                emb = make_embed("🛒 Kaufhilfe", f"Zum Kaufen: **Verify-Button → Produkt wählen → kaufen → `!checkbuy`**\nMehr Infos in <#{C('how_to_buy') or message.channel.id}>.", 0xFFD700, message.author)
+            elif key == "verify":
+                emb = make_embed("🔐 Verify Hilfe", f"Bitte gehe in <#{C('verify') or message.channel.id}> und nutze den **Verify & Roblox verbinden** Button.", 0x2ecc71, message.author)
+            elif key == "delivery":
+                emb = make_embed("📦 Delivery Hilfe", f"Nach `!checkbuy` erhältst du dein Produkt automatisch per DM.\nWenn nichts ankommt: öffne ein Ticket in <#{C('ticket_create') or message.channel.id}>.", 0x3498db, message.author)
+            else:
+                emb = make_embed("🎫 Support Hilfe", f"Für Käufe, Support und Partnerschaften nutze bitte das Ticket-Panel in <#{C('ticket_create') or message.channel.id}>.", 0x1abc9c, message.author)
+            try:
+                await message.reply(embed=emb, delete_after=25)
+            except Exception:
+                pass
+            return True
+    return False
+
+JOIN_TRACKER = {}
+FAQ_COOLDOWNS = {}
+
+async def handle_raid_detection(member:discord.Member):
+    now = time.time()
+    bucket = JOIN_TRACKER.setdefault(member.guild.id, [])
+    bucket.append(now)
+    JOIN_TRACKER[member.guild.id] = [t for t in bucket if now - t <= RAID_JOIN_WINDOW]
+    current = JOIN_TRACKER[member.guild.id]
+    if len(current) < RAID_JOIN_THRESHOLD:
+        return False
+    targets = [member.guild.get_channel(C("general")), member.guild.get_channel(C("bot_commands"))]
+    for ch in targets:
+        if ch and hasattr(ch, 'slowmode_delay'):
+            try:
+                if ch.slowmode_delay < 10:
+                    await ch.edit(slowmode_delay=10, reason="Void_Shop Raid Schutz")
+            except Exception:
+                pass
+    emb = make_embed("🚨 Raid-Schutz aktiviert", f"Im Zeitraum von {RAID_JOIN_WINDOW}s sind **{len(current)}** Joins erkannt worden.\nSlowmode wurde vorsorglich aktiviert.", 0xe74c3c)
+    await send_log(bot, "mod", emb, discord_id=member.id)
+    return True
 
 INVITE_CACHE = {}
 
@@ -2010,6 +2210,28 @@ async def before_stats():
     await bot.wait_until_ready()
     await asyncio.sleep(8)
 
+@tasks.loop(minutes=30)
+async def housekeeping_loop():
+    try:
+        now = time.time()
+        for gid, timestamps in list(JOIN_TRACKER.items()):
+            JOIN_TRACKER[gid] = [t for t in timestamps if now - t <= RAID_JOIN_WINDOW]
+        for key, ts in list(FAQ_COOLDOWNS.items()):
+            if now - ts > FAQ_COOLDOWN_SECONDS * 4:
+                FAQ_COOLDOWNS.pop(key, None)
+        for guild in bot.guilds:
+            try:
+                await refresh_invite_cache(guild)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[housekeeping_loop] {e}")
+
+@housekeeping_loop.before_loop
+async def before_housekeeping():
+    await bot.wait_until_ready()
+    await asyncio.sleep(15)
+
 # =====================================================================
 #  🤖 EVENTS / LOGSYSTEM 2.0
 # =====================================================================
@@ -2064,6 +2286,10 @@ async def on_member_join(member):
                 await member.add_roles(r, reason="Void_Shop Auto Unverified")
     except Exception:
         pass
+    try:
+        await handle_raid_detection(member)
+    except Exception as e:
+        print(f"[raid detection] {e}")
     if used_invite and used_invite.inviter:
         inviter_text = f"\nEingeladen von: {used_invite.inviter.mention} (`{used_invite.code}`)"
         try:
@@ -2161,6 +2387,15 @@ async def on_member_update(before, after):
     if before.nick != after.nick:
         emb = make_embed("🪪 Nickname geändert", f"{after.mention}\nVorher: `{before.nick or before.name}`\nNachher: `{after.nick or after.name}`", 0x7289DA, after)
         await send_log(bot, "system", emb, discord_id=after.id)
+    try:
+        booster_role = after.guild.get_role(ROL("booster")) if ROL("booster") else None
+        if booster_role:
+            if after.premium_since and booster_role not in after.roles:
+                await after.add_roles(booster_role, reason="Void_Shop Booster Sync")
+            elif not after.premium_since and booster_role in after.roles:
+                await after.remove_roles(booster_role, reason="Void_Shop Booster Sync")
+    except Exception:
+        pass
     before_roles = {r.id for r in before.roles if not r.is_default()}
     after_roles = {r.id for r in after.roles if not r.is_default()}
     added = [r.mention for r in after.roles if r.id in (after_roles - before_roles)]
@@ -2206,6 +2441,10 @@ async def on_message(message):
                 await note_ticket_staff_response(message.channel.id, message.author.id)
             except Exception as e:
                 print(f"[ticket response] {e}")
+        try:
+            await maybe_send_faq(message)
+        except Exception as e:
+            print(f"[faq] {e}")
         bad = scan_message_antiscam(message.content)
         if bad:
             try:
@@ -2225,6 +2464,17 @@ async def on_message(message):
                     for b in bad:
                         await db_execute(db, "INSERT INTO antiscam_hits(discord_id,channel_id,url,reason) VALUES(?,?,?,?)", (message.author.id, message.channel.id, b["url"], b["reason"]))
                     await db_commit(db)
+                    cur = await db_execute(db, "SELECT COUNT(*) FROM antiscam_hits WHERE discord_id=? AND created_at >= datetime('now','-1 day')", (message.author.id,))
+                    row = await cur.fetchone()
+                    strikes = int(row[0] if row else 0)
+                if strikes >= 2 and isinstance(message.author, discord.Member):
+                    try:
+                        until = datetime.datetime.utcnow() + datetime.timedelta(hours=1 if strikes == 2 else 24)
+                        await message.author.timeout(until, reason=f"Void_Shop AntiScam Escalation ({strikes} Hits)")
+                        punish = make_embed("⛔ AntiScam Eskalation", f"{message.author.mention} wurde wegen **{strikes}** Scam-Hits temporär stummgeschaltet.", 0xe74c3c, message.author)
+                        await send_log(bot, "mod", punish, discord_id=message.author.id, channel_id=message.channel.id, meta=f"strikes={strikes}")
+                    except Exception as e:
+                        print(f"[antiscam timeout] {e}")
             except Exception as e:
                 print(f"[antiscam db] {e}")
             return
@@ -2332,15 +2582,20 @@ async def on_guild_channel_update(before, after):
 # =====================================================================
 #  💬 COMMANDS
 # =====================================================================
+def is_owner():
+    async def predicate(ctx):
+        return ctx.author.id == OWNER_ID or OWNER_ID == 0 or ctx.author.guild_permissions.administrator
+    return commands.check(predicate)
+
 @bot.command(name="help")
 async def help_cmd(ctx):
     e = discord.Embed(title="🛍️ Void_Shop v2 ULTIMATE – Befehle", color=0xFF2020)
     e.add_field(name="👑 Setup", value="`!start` – Setup-Assistent mit **Abbruch / Nur Hinzufügen / Komplett neu aufsetzen**", inline=False)
     e.add_field(name="🔐 Verify", value="Verify-Button im <#{}> öffnet ein Eingabefenster für deinen Roblox @Namen\nFallback: `!verify <RobloxName>`".format(C("verify") or 0), inline=False)
-    e.add_field(name="🛍️ Shop", value="`!products` – Produkte anzeigen\n`!checkbuy` – Kauf prüfen + Auto-Delivery\n`!history [@user]` – Bestellhistorie", inline=False)
-    e.add_field(name="🪙 Coins & Invites", value="`!coins` `!shop` `!redeem <150|300|500|800>` `!daily` `!coinlb` `!invites [@user]`", inline=False)
-    e.add_field(name="🎫 Tickets", value="Ticket-Panel mit **Produkt kaufen / Support / Partnerschaft**\nClaim + Survey + Staff-Tracking", inline=False)
-    e.add_field(name="👑 Owner / Management", value="`!revenue` `!stafflb` `!ticker`\nZusätzlich CRM / Tickets / Logs / Umsatz im Dashboard", inline=False)
+    e.add_field(name="🛍️ Shop", value="`!products` `!bundles`\n`!checkbuy` – Kauf prüfen + Auto-Delivery\n`!history [@user]` – Bestellhistorie", inline=False)
+    e.add_field(name="🪙 Coins & Invites", value="`!profile` `!coins` `!shop` `!redeem <150|300|500|800>` `!daily` `!weekly` `!coinlb` `!invites [@user]`", inline=False)
+    e.add_field(name="🎫 Tickets", value="Ticket-Panel mit **Produkt kaufen / Support / Partnerschaft**\n`!claim` `!close` `!priority` `!ticketnote` `!notes`", inline=False)
+    e.add_field(name="👑 Owner / Management", value="`!revenue` `!stafflb` `!supportstats` `!backup` `!ticker`\nZusätzlich CRM / Tickets / Logs / Umsatz im Dashboard", inline=False)
     e.set_footer(text=f"Void_Shop v2.0 ULTIMATE • Dashboard-Port: {DASHBOARD_PORT}")
     await ctx.send(embed=e)
 
@@ -2429,6 +2684,10 @@ async def checkbuy_cmd(ctx):
     coins_reward = product.get("coins_reward", COIN_REWARDS["purchase"])
     await add_coins(ctx.author.id, coins_reward, "purchase", product_key)
     await touch_user_activity(ctx.author.id)
+    try:
+        await sync_customer_roles(ctx.author)
+    except Exception:
+        pass
     upsell = ""
     if product_key in {"fastflags_premium", "fastflags_ultra"}:
         upsell = "\n💡 Bonus-Idee: Wenn dir FastFlags gefällt, schau dir auch **Sky** an."
@@ -2498,6 +2757,169 @@ async def invites_cmd(ctx, member: discord.Member=None):
     emb.set_footer(text="Jeder erfolgreiche Invite bringt Void-Coins")
     await ctx.send(embed=emb)
 
+@bot.command(name="profile")
+async def profile_cmd(ctx, member: discord.Member=None):
+    target = member or ctx.author
+    user, invites, open_tickets = await get_profile_data(target.id)
+    if not user:
+        return await ctx.send("Noch kein Profil vorhanden.")
+    try:
+        roblox_name = user[2]; verified = bool(user[3]); coins = int(user[4] or 0); spent = int(user[5] or 0); purchases = int(user[6] or 0); last_activity = user[9]; streak = int(user[10] or 0)
+    except Exception:
+        roblox_name = user['roblox_name']; verified = bool(user['verified']); coins = int(user['coins'] or 0); spent = int(user['total_spent_robux'] or 0); purchases = int(user['purchases'] or 0); last_activity = user['last_activity_at']; streak = int(user['daily_streak'] or 0)
+    emb = discord.Embed(title="👤 Void Profil", color=0x5865F2, timestamp=datetime.datetime.utcnow())
+    emb.add_field(name="User", value=target.mention, inline=True)
+    emb.add_field(name="Roblox", value=roblox_name or '–', inline=True)
+    emb.add_field(name="Verified", value='Ja' if verified else 'Nein', inline=True)
+    emb.add_field(name="Käufe", value=str(purchases), inline=True)
+    emb.add_field(name="Ausgegeben", value=f"{spent} R$", inline=True)
+    emb.add_field(name="Coins", value=str(coins), inline=True)
+    emb.add_field(name="Invites", value=str(invites), inline=True)
+    emb.add_field(name="Offene Tickets", value=str(open_tickets), inline=True)
+    emb.add_field(name="Daily Streak", value=str(streak), inline=True)
+    emb.add_field(name="Letzte Aktivität", value=str(last_activity or '–'), inline=False)
+    await ctx.send(embed=emb)
+
+@bot.command(name="bundles")
+async def bundles_cmd(ctx):
+    emb = discord.Embed(title="📦 Void Bundles", color=0x9b59b6)
+    for key, bundle in BUNDLES.items():
+        items = "\n".join(f"• {product_label(i)}" for i in bundle['items'])
+        emb.add_field(name=f"{bundle['name']} – {bundle['price']} R$", value=items, inline=False)
+    await ctx.send(embed=emb)
+
+@bot.command(name="stats")
+async def stats_cmd(ctx):
+    try:
+        customers = 0
+        async with get_db() as db:
+            cur = await db_execute(db, "SELECT COUNT(*) FROM users WHERE purchases > 0")
+            row = await cur.fetchone()
+            customers = int(row[0] if row else 0)
+        emb = discord.Embed(title="📊 Server Stats", color=0x3498db)
+        emb.add_field(name="Mitglieder", value=str(ctx.guild.member_count), inline=True)
+        emb.add_field(name="Booster", value=str(len(ctx.guild.premium_subscribers)), inline=True)
+        emb.add_field(name="Kunden", value=str(customers), inline=True)
+        emb.add_field(name="Offene Tickets", value=str(await count_open_tickets()), inline=True)
+        await ctx.send(embed=emb)
+    except Exception as e:
+        await ctx.send(f"Fehler: {e}")
+
+@bot.command(name="weekly")
+async def weekly_cmd(ctx):
+    ok = await process_weekly_claim(ctx.author.id)
+    if ok[0]:
+        await ctx.send(f"✅ Weekly abgeholt! +{ok[1]} Coins")
+    else:
+        await ctx.send(f"⏳ Bereits abgeholt. Nächste Weekly in {ok[1]} Tagen.")
+
+@bot.command(name="customernote")
+@commands.has_permissions(manage_messages=True)
+async def customer_note_cmd(ctx, member: discord.Member=None, *, note:str=None):
+    if not member or not note:
+        return await ctx.send("Usage: `!customernote @User deine Notiz`")
+    await add_customer_note(member.id, ctx.author.id, note)
+    await ctx.send(f"✅ Kundennotiz für {member.mention} gespeichert.")
+
+@bot.command(name="notes")
+async def notes_cmd(ctx, member: discord.Member=None):
+    if member:
+        rows = await get_customer_notes(member.id, 10)
+        desc = "\n".join([f"• <@{(r['staff_id'] if hasattr(r,'keys') else r[2])}> — {(r['note'] if hasattr(r,'keys') else r[3])[:120]}" for r in rows])
+        emb = discord.Embed(title="🗒️ Kundennotizen", description=desc or "Keine Notizen vorhanden.", color=0x95a5a6)
+        await ctx.send(embed=emb)
+    elif ctx.channel.name.startswith("ticket-"):
+        rows = await get_ticket_notes(ctx.channel.id, 10)
+        desc = "\n".join([f"• <@{(r['staff_id'] if hasattr(r,'keys') else r[2])}> — {(r['note'] if hasattr(r,'keys') else r[3])[:120]}" for r in rows])
+        emb = discord.Embed(title="🗒️ Ticket-Notizen", description=desc or "Keine Ticket-Notizen vorhanden.", color=0x95a5a6)
+        await ctx.send(embed=emb)
+    else:
+        await ctx.send("Usage: `!notes @User` oder in einem Ticket ohne User-Angabe.")
+
+@bot.command(name="ticketnote")
+@commands.has_permissions(manage_messages=True)
+async def ticketnote_cmd(ctx, *, note:str=None):
+    if not ctx.channel.name.startswith("ticket-"):
+        return await ctx.send("❌ Nur in Ticket-Kanälen nutzbar.")
+    if not note:
+        return await ctx.send("Usage: `!ticketnote deine Notiz`")
+    await add_ticket_note(ctx.channel.id, ctx.author.id, note)
+    await ctx.send("✅ Ticket-Notiz gespeichert.", delete_after=10)
+
+@bot.command(name="claim")
+async def claim_cmd(ctx):
+    if not ctx.channel.name.startswith("ticket-"):
+        return await ctx.send("❌ Nur in Ticket-Kanälen nutzbar.")
+    if not is_staff_member(ctx.author):
+        return await ctx.send("❌ Nur Staff/Admin kann claimen.")
+    ok, info = await claim_ticket(ctx.channel.id, ctx.author.id)
+    if ok:
+        await ctx.send(f"✅ {ctx.author.mention} hat dieses Ticket übernommen.")
+    else:
+        await ctx.send(f"❌ Claim nicht möglich: {info}")
+
+@bot.command(name="close")
+async def close_cmd(ctx):
+    if not ctx.channel.name.startswith("ticket-"):
+        return await ctx.send("❌ Nur in Ticket-Kanälen nutzbar.")
+    row = await get_ticket_row(ctx.channel.id)
+    if not row:
+        return await ctx.send("❌ Ticketdaten nicht gefunden.")
+    try:
+        owner_id = row[1]
+    except Exception:
+        owner_id = row['user_id']
+    if ctx.author.id != owner_id and not is_staff_member(ctx.author):
+        return await ctx.send("❌ Nur Ticket-Ersteller oder Staff kann schließen.")
+    await ctx.send("**Ticket schließen – kurze Umfrage (3 Fragen)**\n\n**Frage 1/3:**\nHaben Sie etwas gekauft?", view=SurveyQ1View(ctx.channel, owner_id, ctx.author.id))
+
+@bot.command(name="priority")
+@commands.has_permissions(manage_messages=True)
+async def priority_cmd(ctx, level:str=None):
+    if not ctx.channel.name.startswith("ticket-"):
+        return await ctx.send("❌ Nur in Ticket-Kanälen nutzbar.")
+    level = (level or '').lower()
+    if level not in {'low','normal','high','critical'}:
+        return await ctx.send("Usage: `!priority low|normal|high|critical`")
+    await set_ticket_priority(ctx.channel.id, level)
+    await ctx.send(embed=make_embed("🚦 Ticket-Priorität", f"Priorität für {ctx.channel.mention} wurde auf **{level.upper()}** gesetzt.", 0xf39c12, ctx.author))
+
+@bot.command(name="supportstats")
+async def supportstats_cmd(ctx, member: discord.Member=None):
+    target = member or ctx.author
+    async with get_db() as db:
+        cur = await db_execute(db, "SELECT tickets_claimed, tickets_closed, avg_response_sec, rating_count, CASE WHEN rating_count>0 THEN rating_sum*1.0/rating_count ELSE 0 END FROM staff_stats WHERE staff_id=?", (target.id,))
+        row = await cur.fetchone()
+    if not row:
+        return await ctx.send("Keine Support-Daten vorhanden.")
+    try:
+        claimed, closed, avg_resp, votes, avg = row[0], row[1], row[2], row[3], row[4]
+    except Exception:
+        claimed, closed, avg_resp, votes, avg = row['tickets_claimed'], row['tickets_closed'], row['avg_response_sec'], row['rating_count'], row[4]
+    emb = discord.Embed(title="👑 Support Stats", color=0x2c3e50)
+    emb.add_field(name="Supporter", value=target.mention, inline=False)
+    emb.add_field(name="Geclaimed", value=str(claimed), inline=True)
+    emb.add_field(name="Geschlossen", value=str(closed), inline=True)
+    emb.add_field(name="Ø Antwortzeit", value=f"{avg_resp or 0}s", inline=True)
+    emb.add_field(name="Bewertung", value=f"{avg:.2f} ⭐", inline=True)
+    emb.add_field(name="Votes", value=str(votes), inline=True)
+    await ctx.send(embed=emb)
+
+@bot.command(name="backup")
+@is_owner()
+async def backup_cmd(ctx):
+    data = {
+        "runtime": RUNTIME,
+        "products": PRODUCTS,
+        "bundles": BUNDLES,
+        "created_at": datetime.datetime.utcnow().isoformat()
+    }
+    os.makedirs('exports', exist_ok=True)
+    path = os.path.join('exports', f"voidshop_backup_{datetime.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json")
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    await ctx.send(file=discord.File(path))
+
 @bot.command(name="shop")
 async def coinshop_cmd(ctx):
     bal = await get_coins(ctx.author.id)
@@ -2538,20 +2960,13 @@ async def coinlb_cmd(ctx):
     await ctx.send(embed=emb)
 
 @bot.command(name="daily")
-@commands.cooldown(1,86400,commands.BucketType.user)
 async def daily_cmd(ctx):
-    await add_coins(ctx.author.id, COIN_REWARDS["daily"], "daily")
-    await ctx.send(f"✅ Daily abgeholt! +{COIN_REWARDS['daily']} Coins")
-
-@daily_cmd.error
-async def daily_error(ctx, error):
-    if isinstance(error, commands.CommandOnCooldown):
-        h = int(error.retry_after//3600); m = int((error.retry_after%3600)//60)
-        await ctx.send(f"⏳ Schon abgeholt! Nächster Daily in {h}h {m}m")
-
-def is_owner():
-    async def predicate(ctx): return ctx.author.id == OWNER_ID or OWNER_ID==0 or ctx.author.guild_permissions.administrator
-    return commands.check(predicate)
+    claimed, streak, base_reward, streak_bonus = await process_daily_claim(ctx.author.id)
+    if not claimed:
+        return await ctx.send("⏳ Schon abgeholt! Versuche es morgen erneut.")
+    extra = f"\n🔥 Streak: **{streak} Tage**" if streak else ""
+    bonus = f"\n🎁 Streak-Bonus: **+{streak_bonus}** Coins" if streak_bonus else ""
+    await ctx.send(f"✅ Daily abgeholt! +{base_reward} Coins{bonus}{extra}")
 
 @bot.command(name="revenue")
 @is_owner()
@@ -2630,7 +3045,7 @@ th{color:var(--muted)}
 input,textarea{width:100%;padding:10px;background:#0f0f18;border:1px solid #2a2a40;color:#eee;border-radius:10px}
 </style></head><body>
 <div class=nav><b>🛍️ VOID_SHOP v2</b>
-<a href="/">Dashboard</a><a href="/crm">CRM</a><a href="/products">Produkte</a><a href="/coins">Coins</a><a href="/invites">Invites</a><a href="/tickets">Tickets</a><a href="/logs">Logs</a><a href="/staff">Staff</a>
+<a href="/">Dashboard</a><a href="/crm">CRM</a><a href="/products">Produkte</a><a href="/coins">Coins</a><a href="/invites">Invites</a><a href="/tickets">Tickets</a><a href="/notes">Notizen</a><a href="/logs">Logs</a><a href="/staff">Staff</a><a href="/public-shop">Public Shop</a>
 <span style="flex:1"></span><a href="/logout">Logout</a></div>
 <div class=wrap>{{ content|safe }}
 <div class=footer>Void_Shop v2.0 ULTIMATE • RealVexo696 • Companion to VOID-TOOLS v2.6 • aiosqlite={{aiosqlite}}</div>
@@ -2759,6 +3174,7 @@ button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border
             return page("<div class=card><h2>Kunde nicht gefunden</h2></div>")
         orders = q("SELECT product_key, robux_price, order_code, created_at FROM purchases WHERE discord_id=? ORDER BY created_at DESC LIMIT 100", (discord_id,))
         tickets = q("SELECT channel_id, type, created_at, closed FROM tickets_open WHERE user_id=? ORDER BY created_at DESC LIMIT 50", (discord_id,))
+        notes = q("SELECT * FROM customer_notes WHERE discord_id=? ORDER BY created_at DESC LIMIT 20", (discord_id,))
         html = f"<h2>🧾 Kundenprofil – &lt;@{discord_id}&gt;</h2><div class=grid>"
         html += f"<div class=card><h3>Roblox</h3><div class=big>{user['roblox_name'] or '–'}</div></div>"
         html += f"<div class=card><h3>Käufe</h3><div class=big>{user['purchases']}</div></div>"
@@ -2775,16 +3191,53 @@ button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border
         if not tickets:
             html += "<tr><td colspan=3 style=color:#666>Keine Tickets vorhanden.</td></tr>"
         html += "</table></div></div>"
+        html += "<div class=card style='margin-top:16px'><h3>Kundennotizen</h3><table><tr><th>Zeit</th><th>Staff</th><th>Notiz</th></tr>"
+        for n in notes:
+            html += f"<tr><td>{n['created_at']}</td><td>&lt;@{n['staff_id']}&gt;</td><td>{(n['note'] or '')[:240]}</td></tr>"
+        if not notes:
+            html += "<tr><td colspan=3 style=color:#666>Keine Kundennotizen vorhanden.</td></tr>"
+        html += "</table></div>"
+        return page(html)
+    @app.route("/notes")
+    @owner_required
+    def notes_page():
+        notes = q("SELECT * FROM customer_notes ORDER BY created_at DESC LIMIT 200")
+        tnotes = q("SELECT * FROM ticket_notes ORDER BY created_at DESC LIMIT 200")
+        html = "<h2>🗒️ Notizen-Zentrale</h2><div class=two><div class=card><h3>Kundennotizen</h3><table><tr><th>Zeit</th><th>Kunde</th><th>Staff</th><th>Notiz</th></tr>"
+        for n in notes:
+            html += f"<tr><td>{n['created_at']}</td><td>&lt;@{n['discord_id']}&gt;</td><td>&lt;@{n['staff_id']}&gt;</td><td>{(n['note'] or '')[:180]}</td></tr>"
+        if not notes:
+            html += "<tr><td colspan=4 style=color:#666>Keine Kundennotizen vorhanden.</td></tr>"
+        html += "</table></div><div class=card><h3>Ticket-Notizen</h3><table><tr><th>Zeit</th><th>Channel</th><th>Staff</th><th>Notiz</th></tr>"
+        for n in tnotes:
+            html += f"<tr><td>{n['created_at']}</td><td>#{n['channel_id']}</td><td>&lt;@{n['staff_id']}&gt;</td><td>{(n['note'] or '')[:180]}</td></tr>"
+        if not tnotes:
+            html += "<tr><td colspan=4 style=color:#666>Keine Ticket-Notizen vorhanden.</td></tr>"
+        html += "</table></div></div>"
+        return page(html)
+    @app.route("/public-shop")
+    def public_shop_page():
+        html = "<h2>🛍️ Void Shop – Public Shop Page</h2><div class=grid>"
+        for k, p in PRODUCTS.items():
+            html += f"<div class=card><h3>{p['name']}</h3><div class='big gold'>{p['robux_price']} R$</div><p>Gamepass: {p['gamepass_id']}</p><p>{(p.get('deliver',{}).get('message','') or 'Premium Produkt')[:180]}</p></div>"
+        html += "</div><div class=card style='margin-top:16px'><h3>Bundles</h3><table><tr><th>Name</th><th>Preis</th><th>Inhalt</th></tr>"
+        for _, b in BUNDLES.items():
+            items = ", ".join(product_label(i) for i in b['items'])
+            html += f"<tr><td>{b['name']}</td><td>{b['price']} R$</td><td>{items}</td></tr>"
+        html += "</table></div>"
         return page(html)
     @app.route("/products")
     @owner_required
     def products_page():
         import json
         pretty = json.dumps(PRODUCTS, indent=2, ensure_ascii=False)
+        bundles = json.dumps(BUNDLES, indent=2, ensure_ascii=False)
         html = f"""<h2>🛍️ Produkt-Manager – Auto-Delivery</h2>
-<div class=card><p>Produkte sind in v2 ULTIMATE direkt im Code <code>PRODUCTS = {{...}}</code> (Zeile ~95).<br>
+<div class=card><p>Produkte sind in v2 ULTIMATE direkt im Code <code>PRODUCTS = {{...}}</code>.<br>
 Ändere Gamepass IDs & Download-Links dort.</p>
-<pre style="background:#0f0f18;padding:16px;border-radius:12px;overflow:auto;max-height:600px;font-size:12px">{pretty}</pre>
+<pre style="background:#0f0f18;padding:16px;border-radius:12px;overflow:auto;max-height:420px;font-size:12px">{pretty}</pre>
+<h3 style='margin-top:16px'>Bundles</h3>
+<pre style="background:#0f0f18;padding:16px;border-radius:12px;overflow:auto;max-height:260px;font-size:12px">{bundles}</pre>
 <a href="/" class=btn>← Dashboard</a></div>"""
         return page(html)
     @app.route("/coins")
@@ -2843,7 +3296,7 @@ button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border
     def tickets_page():
         rows = q("""
             SELECT t.channel_id, t.user_id, t.type, t.created_at, t.closed,
-                   m.claimed_by, m.claimed_at, m.first_staff_response_at, m.closer_id, m.closed_at, m.survey_product, m.survey_stars,
+                   m.claimed_by, m.claimed_at, m.first_staff_response_at, m.closer_id, m.closed_at, m.survey_product, m.survey_stars, m.priority,
                    tt.file_path
             FROM tickets_open t
             LEFT JOIN ticket_metrics m ON m.channel_id=t.channel_id
@@ -2851,17 +3304,18 @@ button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border
             ORDER BY t.closed ASC, t.created_at DESC
             LIMIT 200
         """)
-        html = "<h2>🎫 Ticket Control Center</h2><div class=card><table><tr><th>Status</th><th>User</th><th>Typ</th><th>Claimed By</th><th>First Response</th><th>Produkt</th><th>⭐</th><th>Transcript</th><th>Erstellt</th></tr>"
+        html = "<h2>🎫 Ticket Control Center</h2><div class=card><table><tr><th>Status</th><th>User</th><th>Typ</th><th>Priorität</th><th>Claimed By</th><th>First Response</th><th>Produkt</th><th>⭐</th><th>Transcript</th><th>Erstellt</th></tr>"
         for r in rows:
             status = "🟢 Offen" if not r["closed"] else "⚫ Geschlossen"
             claimed = f"&lt;@{r['claimed_by']}&gt;" if r["claimed_by"] else "–"
             first_response = r["first_staff_response_at"] or "–"
             product = r["survey_product"] or "–"
             stars = r["survey_stars"] or "–"
+            priority = (r["priority"] or "normal").upper()
             transcript = r["file_path"] or "–"
-            html += f"<tr><td>{status}</td><td>&lt;@{r['user_id']}&gt;</td><td>{r['type']}</td><td>{claimed}</td><td>{first_response}</td><td>{product}</td><td>{stars}</td><td>{transcript}</td><td>{r['created_at']}</td></tr>"
+            html += f"<tr><td>{status}</td><td>&lt;@{r['user_id']}&gt;</td><td>{r['type']}</td><td>{priority}</td><td>{claimed}</td><td>{first_response}</td><td>{product}</td><td>{stars}</td><td>{transcript}</td><td>{r['created_at']}</td></tr>"
         if not rows:
-            html += "<tr><td colspan=9 style=color:#666>Noch keine Ticket-Daten vorhanden.</td></tr>"
+            html += "<tr><td colspan=10 style=color:#666>Noch keine Ticket-Daten vorhanden.</td></tr>"
         html += "</table></div>"
         return page(html)
     @app.route("/staff")
@@ -2917,9 +3371,12 @@ async def main():
             await asyncio.sleep(3600)
         await asyncio.sleep(2)
         sys.exit(0)
-    # Stats Loop starten
+    # Stats / Housekeeping Loops starten
     if not stats_loop.is_running():
         try: stats_loop.start()
+        except: pass
+    if not housekeeping_loop.is_running():
+        try: housekeeping_loop.start()
         except: pass
     async with bot:
         await bot.start(TOKEN)
