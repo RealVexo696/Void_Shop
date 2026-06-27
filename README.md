@@ -1,5 +1,6 @@
 # 𝗩𝗢𝗜𝗗 • Prestige Discord Bot 🚀 (24/7 Railway Ready)
 
+
 Dieser Bot ist ein absolutes **Prestige-Meisterwerk** für Roblox- und Discord-Verkaufsshops. Er ist darauf ausgelegt, komplett stabil und vollautomatisiert **24/7 auf Railway** (oder ähnlichen Cloud-Diensten) gehostet zu werden.
 
 Er enthält ein **integriertes Flask-Webportal**, welches dafür sorgt, dass der Bot permanent online bleibt, ohne einzuschlafen, sowie ein beispielloses **7-faches Premium-Logging-System** und ein **Multi-Kategorie Ticket-System**.
