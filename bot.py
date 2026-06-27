@@ -1277,7 +1277,7 @@ class VoidShopBot(commands.Bot):
     async def on_ready(self):
         activity = discord.Activity(
             type=discord.ActivityType.watching, 
-            name="über 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 | !Start"
+            name="über 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 | !setup"
         )
         await self.change_presence(status=discord.Status.online, activity=activity)
         
@@ -1552,231 +1552,9 @@ async def checkbuy_command(ctx, roblox_username: str = None, gamepass_id: int = 
         await status_msg.edit(embed=embed_fail)
 
 
-# --- ROLES SETUP COMMAND (!role) ---
-
-@bot.command(name="role", aliases=["roles", "Role", "Roles"])
-@commands.guild_only()
-@commands.has_permissions(administrator=True)
-async def create_roles_command(ctx):
-    """
-    Erstellt alle 23 Premium-Rollen, prüft ob sie bereits existieren,
-    und setzt im Anschluss alle Kanalrechte für diese Rollen.
-    Inklusive dynamic-permissions Schutz.
-    """
-    progress_embed = create_prestige_embed(
-        title="👑 Rollen- & Berechtigungs-Setup",
-        description="> ⚙️ Initialisiere das Erstellen von 23 Premium-Rollen...\nBitte warten.",
-        color=0x00f0ff,
-        author_user=ctx.author,
-        bot_user=bot.user
-    )
-    status_msg = await ctx.send(embed=progress_embed)
-
-    guild = ctx.guild
-    bot_member = guild.me
-    bot_permissions = bot_member.guild_permissions
-
-    role_colors = {
-        # --- STAFF ROLES ---
-        "👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿": (0xff003c, True),        # Crimson Red
-        "👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿": (0xff3366, True),     # Light Pink-Red
-        "🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻": (0x00f0ff, True),        # Neon Cyan
-        "⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿": (0x00a8a8, True),      # Dark Teal
-        "🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿": (0x39ff14, False),    # Neon Green
-        "🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁": (0x20b2aa, False),      # Light Sea Green
-        "🚨│ 𝗩𝗢𝗜𝗗 • 𝗧𝗿𝗶𝗮𝗹 𝗠𝗼𝗱": (0xadff2f, False),    # Green Yellow
-        
-        # --- SPECIAL ROLES ---
-        "🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿": (0xffa500, False),      # Orange
-        "💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿": (0xf47fff, False),      # Pink
-        "🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣": (0xffd700, False),          # Gold (VIP)
-        "🫂│ 𝗩𝗢𝗜𝗗 • 𝗙𝗿𝗶𝗲𝗻𝗱": (0xff69b4, False),        # Hot Pink
-        "👤│ 𝗩𝗢𝗜𝗗 • 𝗩𝗲𝗿𝗶𝗳𝗶𝗲𝗱": (0x7f8c8d, False),      # Gray-Blue (Verified)
-        
-        # --- CUSTOMER ROLES ---
-        "🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿": (0xffff00, False),     # Yellow
-        "💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿": (0x00ffff, False), # Cyan Customer
-        
-        # --- REWARD ROLES (BUYER LEVELS) ---
-        "🥉│ 𝗕𝗿𝗼𝗻𝘇𝗲 𝗕𝘂𝘆𝗲𝗿": (0xcd7f32, False),       # Bronze
-        "🥈│ 𝗦𝗶𝗹𝘃𝗲𝗿 𝗕𝘂𝘆𝗲𝗿": (0xc0c0c0, False),       # Silver
-        "🥇│ 𝗚𝗼𝗹𝗱 𝗕𝘂𝘆𝗲𝗿": (0xffd700, False),         # Gold
-        "💎│ 𝗗𝗶𝗮𝗺𝗼𝗻𝗱 𝗕𝘂𝘆𝗲𝗿": (0xb9f2ff, False),       # Diamond
-        
-        # --- NOTIFICATION ROLES ---
-        "📢│ 𝗔𝗻𝗻𝗼𝘂𝗻𝗰𝗲𝗺𝗲𝗻𝘁 𝗣𝗶𝗻𝗴": (0x7289da, False),  # Discord Blue
-        "🎁│ 𝗚𝗶𝘃𝗲𝗮𝘄𝗮𝘆 𝗣𝗶𝗻𝗴": (0xff4500, False),      # Red-Orange
-        "📦│ 𝗣𝗿𝗼𝗱𝘂𝗰𝘁 𝗣𝗶𝗻𝗴": (0x32cd32, False),       # Lime Green
-        
-        # --- BASE ROLES ---
-        "👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿": (0xa0a0a0, False),       # Light Gray
-        "🤖│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝘁": (0x4a00a8, False)           # Dark Purple
-    }
-
-    created_roles = {}
-    roles_created_count = 0
-    roles_skipped_count = 0
-    roles_failed_count = 0
-
-    for role_name, (color_hex, is_admin) in role_colors.items():
-        existing_role = discord.utils.get(guild.roles, name=role_name)
-        if existing_role:
-            created_roles[role_name] = existing_role
-            roles_skipped_count += 1
-            continue
-
-        try:
-            perms = discord.Permissions.none()
-            if is_admin and bot_permissions.administrator:
-                perms.administrator = True
-            elif "Moderator" in role_name or "Manager" in role_name:
-                requested_perms = [
-                    ("view_channel", True), ("send_messages", True), ("manage_messages", True),
-                    ("kick_members", True), ("ban_members", True), ("mute_members", True),
-                    ("deafen_members", True), ("move_members", True), ("change_nickname", True),
-                    ("read_message_history", True), ("attach_files", True), ("embed_links", True),
-                    ("add_reactions", True), ("use_external_emojis", True)
-                ]
-                for perm_name, req_val in requested_perms:
-                    if getattr(bot_permissions, perm_name, False):
-                        setattr(perms, perm_name, True)
-            else:
-                requested_perms = [
-                    ("view_channel", True), ("send_messages", True), ("read_message_history", True),
-                    ("attach_files", True), ("embed_links", True), ("add_reactions", True),
-                    ("use_external_emojis", True), ("change_nickname", True)
-                ]
-                for perm_name, req_val in requested_perms:
-                    if getattr(bot_permissions, perm_name, False):
-                        setattr(perms, perm_name, True)
-
-            new_role = await guild.create_role(
-                name=role_name,
-                color=discord.Color(color_hex),
-                permissions=perms,
-                hoist=True,
-                mentionable=True
-            )
-            created_roles[role_name] = new_role
-            roles_created_count += 1
-            await asyncio.sleep(0.15)
-        except discord.Forbidden:
-            try:
-                new_role = await guild.create_role(
-                    name=role_name,
-                    color=discord.Color(color_hex),
-                    permissions=discord.Permissions.default(),
-                    hoist=True,
-                    mentionable=True
-                )
-                created_roles[role_name] = new_role
-                roles_created_count += 1
-                await asyncio.sleep(0.15)
-            except discord.Forbidden:
-                roles_failed_count += 1
-                logger.error(f"Konnte Rolle {role_name} überhaupt nicht erstellen.")
-        except Exception as e:
-            roles_failed_count += 1
-            logger.error(f"Fehler bei {role_name}: {e}")
-
-    if roles_failed_count > 0 and roles_created_count == 0 and roles_skipped_count == 0:
-        embed_warning = create_prestige_embed(
-            title="⚠️ FEHLER: Keine Rollen erstellt!",
-            description=f"> Es konnte **keine einzige Rolle** erstellt werden!\n\n"
-                        f"**Ursache:**\n"
-                        f"Dem Bot fehlt im Server die Berechtigung **'Rollen verwalten'** (Manage Roles).\n\n"
-                        f"**So behebst du diesen Fehler:**\n"
-                        f"1. Gehe in deine **Server-Einstellungen** ➔ **Rollen**.\n"
-                        f"2. Klicke auf die Rolle deines Bots (`𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣`).\n"
-                        f"3. Aktiviere die Berechtigung **'Rollen verwalten'** (oder Administrator).\n"
-                        f"4. Ziehe meine Rolle ganz nach oben.\n"
-                        f"5. Führe `!role` erneut aus.",
-            color=0xff003c,
-            author_user=ctx.author,
-            bot_user=bot.user
-        )
-        await status_msg.edit(embed=embed_warning)
-        return
-
-    r_everyone = guild.default_role
-    r_member = created_roles.get("👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿") or r_everyone
-    r_customer = created_roles.get("🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿") or r_everyone
-    r_premium_buyer = created_roles.get("💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿") or r_everyone
-    r_vip = created_roles.get("🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣") or r_everyone
-    r_booster = created_roles.get("💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿") or r_everyone
-    r_partner = created_roles.get("🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿") or r_everyone
-    r_support = created_roles.get("🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁") or r_everyone
-    r_trial_mod = created_roles.get("🚨│ 𝗩𝗢𝗜𝗗 • 𝗧𝗿𝗶𝗮𝗹 𝗠𝗼𝗱") or r_everyone
-    r_mod = created_roles.get("🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿") or r_everyone
-    r_manager = created_roles.get("⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿") or r_everyone
-    r_admin = created_roles.get("🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻") or r_everyone
-    r_co_owner = created_roles.get("👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿") or r_everyone
-    r_owner = created_roles.get("👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿") or r_everyone
-
-    progress_embed.description = f"> 👑 Rollen geprüft: **{roles_created_count} erstellt**, **{roles_skipped_count} übersprungen**.\n> 🔒 Setze jetzt Berechtigungen für alle Kanäle..."
-    await status_msg.edit(embed=progress_embed)
-
-    stats_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, connect=False)}
-    verify_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)}
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner, r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: verify_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
-
-    info_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: info_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
-        if r != r_everyone: info_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
-
-    community_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: community_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
-        if r != r_everyone: community_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True, add_reactions=True, read_message_history=True)
-
-    staff_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
-        if r != r_everyone: staff_overwrites[r] = discord.PermissionOverwrite(view_channel=False)
-    for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: staff_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
-    log_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner, r_support, r_trial_mod, r_mod]:
-        if r != r_everyone: log_overwrites[r] = discord.PermissionOverwrite(view_channel=False)
-    for r in [r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: log_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-
-    channels_processed = 0
-    for channel in guild.channels:
-        try:
-            if channel.category and "LOGS" in channel.category.name.upper():
-                await channel.edit(overwrites=log_overwrites)
-            elif channel.category and "STAFF" in channel.category.name.upper():
-                await channel.edit(overwrites=staff_overwrites)
-            elif channel.category and "STATS" in channel.category.name.upper():
-                await channel.edit(overwrites=stats_overwrites)
-            elif (channel.category and "VERIFY" in channel.category.name.upper()) or channel.name in ["👋│willkommen", "willkommen", "🔐│verify-here", "verify-here"]:
-                await channel.edit(overwrites=verify_overwrites)
-            elif channel.category and ("INFO" in channel.category.name.upper() or "SHOP" in channel.category.name.upper() or "SUPPORT" in channel.category.name.upper() or "CHAT" in channel.category.name.upper() or "TALK" in channel.category.name.upper()):
-                await channel.edit(overwrites=info_overwrites if "CHAT" not in channel.category.name.upper() and "TALK" not in channel.category.name.upper() else community_overwrites)
-            channels_processed += 1
-            await asyncio.sleep(0.1)
-        except Exception:
-            pass
-
-    success_embed = create_prestige_embed(
-        title="🎉 Rollen & Rechte-Setup beendet!",
-        description=f"> 👑 **Rollen erstellt:** {roles_created_count}\n"
-                    f"> 👑 **Rollen übersprungen:** {roles_skipped_count}\n"
-                    f"> 🔒 **Kanäle konfiguriert:** {channels_processed}\n\n"
-                    f"Alle Berechtigungen wurden für deine 23 Rollen optimal eingestellt!",
-        color=0x39ff14,
-        author_user=ctx.author,
-        bot_user=bot.user
-    )
-    await status_msg.edit(embed=success_embed)
-
-
-# --- SETUP CONFIRMATION VIEW & COMMAND (!Start) ---
+# --- COMBINED SETUP COMMAND (!setup) ---
+# Vereint die alte !role und !Start Funktionalität in EINEM Befehl.
+# Reihenfolge: 1) Rollen erstellen → 2) Kanäle erstellen → 3) Rechte setzen → 4) Embed-Nachrichten senden
 
 class SetupConfirmationView(discord.ui.View):
     def __init__(self, ctx):
@@ -1853,20 +1631,31 @@ async def check_invites_command(ctx, target_user: discord.Member = None):
     await ctx.send(embed=embed)
 
 
-@bot.command(name="Start", aliases=["start"])
+@bot.command(name="setup", aliases=["Setup", "start", "Start", "role", "roles", "Role", "Roles"])
 @commands.guild_only()
 @commands.has_permissions(administrator=True)
-async def start(ctx):
+async def setup_command(ctx):
     """
-    Richtet den kompletten Server mit allen Kategorien, Kanälen und Logs ein.
-    Nutzbar nach '!role', um das volle Layout zu erstellen.
+    KOMPLETTES SERVER-SETUP in einem Befehl:
+    1) Alle 23 Premium-Rollen erstellen (mit Duplikat-Prüfung)
+    2) Alle Kategorien & Kanäle erstellen
+    3) Alle Berechtigungen setzen
+    4) Alle Embed-Nachrichten in die Kanäle senden
     """
+    guild = ctx.guild
+    bot_member = guild.me
+    bot_permissions = bot_member.guild_permissions
+
+    # ============================
+    # BESTÄTIGUNG VOM USER HOLEN
+    # ============================
     embed_choice = create_prestige_embed(
         title="⚠️ 𝗩𝗢𝗜𝗗 • SERVER SETUP INITIALISIERUNG ⚠️",
         description=f"Hallo {ctx.author.mention},\n\ndu bist dabei, das **Prestige Server-Layout** für **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣** aufzubauen.\n"
                     f"Dieses Setup generiert:\n"
+                    f"> 👑 │ **23 Premium-Rollen** mit optimalen Berechtigungen\n"
                     f"> 📁 │ **7 Hauptkategorien, 1 Log-Kategorie & 1 Stats-Kategorie**\n"
-                    f"> 💬 │ **27 Textkanäle, 7 Voicekanäle & 7 professionelle Log-Kanäle (Gesamt: 41 Kanäle)**\n"
+                    f"> 💬 │ **27 Textkanäle, 7 Voicekanäle & 8 professionelle Log-Kanäle (Gesamt: 42 Kanäle)**\n"
                     f"> ⚙️ │ **Vollständiges Embed-Design in allen Infokanälen**\n\n"
                     f"Bitte wähle eine Option aus:\n\n"
                     f"🧹 **Komplett neu aufsetzen:** Löscht alle Kanäle (außer den aktuellen) und baut neu auf.\n"
@@ -1875,16 +1664,15 @@ async def start(ctx):
         author_user=ctx.author,
         bot_user=bot.user
     )
-    
+
     view = SetupConfirmationView(ctx)
     confirm_msg = await ctx.send(embed=embed_choice, view=view)
-
     await view.wait()
 
     if view.value is None or view.value == "cancel":
         embed_cancel = create_prestige_embed(
             title="❌ Setup abgebrochen",
-            description="> Das Server-Setup wurde abgebrochen. Es wurden keine Kanäle erstellt.",
+            description="> Das Server-Setup wurde abgebrochen. Es wurden keine Änderungen vorgenommen.",
             color=0x3e3e3e,
             author_user=ctx.author,
             bot_user=bot.user
@@ -1892,9 +1680,10 @@ async def start(ctx):
         await confirm_msg.edit(embed=embed_cancel, view=None)
         return
 
+    # Status-Nachricht erstellen
     status_embed = create_prestige_embed(
         title="⚙️ Setup-Prozess läuft...",
-        description="> Lösche alte Kanäle (sofern ausgewählt)...",
+        description="> ⏳ Initialisiere...",
         color=0x00f0ff,
         author_user=ctx.author,
         bot_user=bot.user
@@ -1902,9 +1691,13 @@ async def start(ctx):
     status_msg = await ctx.send(embed=status_embed)
     await confirm_msg.delete()
 
-    guild = ctx.guild
-
+    # ============================
+    # SCHRITT 0: RESET (falls gewählt)
+    # ============================
     if view.value == "reset":
+        status_embed.description = "> 🧹 Lösche alte Kanäle & Rollen..."
+        await status_msg.edit(embed=status_embed)
+
         for channel in guild.channels:
             if channel.id != ctx.channel.id:
                 try:
@@ -1913,23 +1706,170 @@ async def start(ctx):
                 except Exception:
                     pass
 
-    # Berechtigungs-Gruppen definieren
-    r_everyone = guild.default_role
-    r_member = discord.utils.get(guild.roles, name="👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿") or r_everyone
-    r_customer = discord.utils.get(guild.roles, name="🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿") or r_everyone
-    r_premium_buyer = discord.utils.get(guild.roles, name="💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿") or r_everyone
-    r_vip = discord.utils.get(guild.roles, name="🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜package") or r_everyone
-    r_booster = discord.utils.get(guild.roles, name="💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿") or r_everyone
-    r_partner = discord.utils.get(guild.roles, name="🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿") or r_everyone
-    r_support = discord.utils.get(guild.roles, name="🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁") or r_everyone
-    r_trial_mod = discord.utils.get(guild.roles, name="🚨│ 𝗩𝗢𝗜𝗗 • 𝗧𝗿𝗶𝗮𝗹 𝗠𝗼𝗱") or r_everyone
-    r_mod = discord.utils.get(guild.roles, name="🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿") or r_everyone
-    r_manager = discord.utils.get(guild.roles, name="⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿") or r_everyone
-    r_admin = discord.utils.get(guild.roles, name="🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻") or r_everyone
-    r_co_owner = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿") or r_everyone
-    r_owner = discord.utils.get(guild.roles, name="👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿") or r_everyone
+        for role in guild.roles:
+            if role != guild.default_role and not role.managed and role < bot_member.top_role:
+                try:
+                    await role.delete()
+                    await asyncio.sleep(0.1)
+                except Exception:
+                    pass
 
+    # ============================
+    # SCHRITT 1: ALLE 23 ROLLEN ERSTELLEN
+    # ============================
+    status_embed.description = "> 👑 **Schritt 1/4:** Erstelle 23 Premium-Rollen..."
+    await status_msg.edit(embed=status_embed)
+
+    # Rollen-Definition (von NIEDRIGSTER nach HÖCHSTER Priorität)
+    # Die zuerst erstellten landen unten, die letzten oben in der Hierarchie
+    role_definitions = [
+        # --- BASE ROLES (ganz unten) ---
+        ("🤖│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝘁", 0x4a00a8, False),
+        ("👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿", 0xa0a0a0, False),
+        # --- NOTIFICATION ROLES ---
+        ("📦│ 𝗣𝗿𝗼𝗱𝘂𝗰𝘁 𝗣𝗶𝗻𝗴", 0x32cd32, False),
+        ("🎁│ 𝗚𝗶𝘃𝗲𝗮𝘄𝗮𝘆 𝗣𝗶𝗻𝗴", 0xff4500, False),
+        ("📢│ 𝗔𝗻𝗻𝗼𝘂𝗻𝗰𝗲𝗺𝗲𝗻𝘁 𝗣𝗶𝗻𝗴", 0x7289da, False),
+        # --- REWARD ROLES (BUYER LEVELS) ---
+        ("🥉│ 𝗕𝗿𝗼𝗻𝘇𝗲 𝗕𝘂𝘆𝗲𝗿", 0xcd7f32, False),
+        ("🥈│ 𝗦𝗶𝗹𝘃𝗲𝗿 𝗕𝘂𝘆𝗲𝗿", 0xc0c0c0, False),
+        ("🥇│ 𝗚𝗼𝗹𝗱 𝗕𝘂𝘆𝗲𝗿", 0xffd700, False),
+        ("💎│ 𝗗𝗶𝗮𝗺𝗼𝗻𝗱 𝗕𝘂𝘆𝗲𝗿", 0xb9f2ff, False),
+        # --- CUSTOMER ROLES ---
+        ("🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿", 0xffff00, False),
+        ("💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿", 0x00ffff, False),
+        # --- SPECIAL ROLES ---
+        ("👤│ 𝗩𝗢𝗜𝗗 • 𝗩𝗲𝗿𝗶𝗳𝗶𝗲𝗱", 0x7f8c8d, False),
+        ("🫂│ 𝗩𝗢𝗜𝗗 • 𝗙𝗿𝗶𝗲𝗻𝗱", 0xff69b4, False),
+        ("🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣", 0xffd700, False),
+        ("💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿", 0xf47fff, False),
+        ("🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿", 0xffa500, False),
+        # --- STAFF ROLES (oben) ---
+        ("🚨│ 𝗩𝗢𝗜𝗗 • 𝗧𝗿𝗶𝗮𝗹 𝗠𝗼𝗱", 0xadff2f, False),
+        ("🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁", 0x20b2aa, False),
+        ("🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿", 0x39ff14, False),
+        ("⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿", 0x00a8a8, True),
+        ("🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻", 0x00f0ff, True),
+        ("👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿", 0xff3366, True),
+        ("👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿", 0xff003c, True),
+    ]
+
+    all_roles = {}  # name -> Role object
+    roles_created_count = 0
+    roles_skipped_count = 0
+    roles_failed_count = 0
+
+    for role_name, color_hex, is_admin in role_definitions:
+        existing_role = discord.utils.get(guild.roles, name=role_name)
+        if existing_role:
+            all_roles[role_name] = existing_role
+            roles_skipped_count += 1
+            continue
+
+        try:
+            perms = discord.Permissions.none()
+            if is_admin and bot_permissions.administrator:
+                perms.administrator = True
+            elif "Moderator" in role_name or "Manager" in role_name:
+                requested_perms = [
+                    ("view_channel", True), ("send_messages", True), ("manage_messages", True),
+                    ("kick_members", True), ("ban_members", True), ("mute_members", True),
+                    ("deafen_members", True), ("move_members", True), ("change_nickname", True),
+                    ("read_message_history", True), ("attach_files", True), ("embed_links", True),
+                    ("add_reactions", True), ("use_external_emojis", True)
+                ]
+                for perm_name, req_val in requested_perms:
+                    if getattr(bot_permissions, perm_name, False):
+                        setattr(perms, perm_name, True)
+            else:
+                requested_perms = [
+                    ("view_channel", True), ("send_messages", True), ("read_message_history", True),
+                    ("attach_files", True), ("embed_links", True), ("add_reactions", True),
+                    ("use_external_emojis", True), ("change_nickname", True)
+                ]
+                for perm_name, req_val in requested_perms:
+                    if getattr(bot_permissions, perm_name, False):
+                        setattr(perms, perm_name, True)
+
+            new_role = await guild.create_role(
+                name=role_name,
+                color=discord.Color(color_hex),
+                permissions=perms,
+                hoist=True,
+                mentionable=True
+            )
+            all_roles[role_name] = new_role
+            roles_created_count += 1
+            await asyncio.sleep(0.15)
+        except discord.Forbidden:
+            try:
+                new_role = await guild.create_role(
+                    name=role_name,
+                    color=discord.Color(color_hex),
+                    permissions=discord.Permissions.default(),
+                    hoist=True,
+                    mentionable=True
+                )
+                all_roles[role_name] = new_role
+                roles_created_count += 1
+                await asyncio.sleep(0.15)
+            except discord.Forbidden:
+                roles_failed_count += 1
+                logger.error(f"Konnte Rolle {role_name} überhaupt nicht erstellen.")
+        except Exception as e:
+            roles_failed_count += 1
+            logger.error(f"Fehler bei {role_name}: {e}")
+
+    # Prüfung: Wenn keine einzige Rolle erstellt werden konnte
+    if roles_failed_count > 0 and roles_created_count == 0 and roles_skipped_count == 0:
+        embed_warning = create_prestige_embed(
+            title="⚠️ FEHLER: Keine Rollen erstellt!",
+            description=f"> Es konnte **keine einzige Rolle** erstellt werden!\n\n"
+                        f"**Ursache:**\n"
+                        f"Dem Bot fehlt im Server die Berechtigung **'Rollen verwalten'** (Manage Roles).\n\n"
+                        f"**So behebst du diesen Fehler:**\n"
+                        f"1. Gehe in deine **Server-Einstellungen** ➔ **Rollen**.\n"
+                        f"2. Klicke auf die Rolle deines Bots (`𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣`).\n"
+                        f"3. Aktiviere die Berechtigung **'Rollen verwalten'** (oder Administrator).\n"
+                        f"4. Ziehe meine Rolle ganz nach oben.\n"
+                        f"5. Führe `!setup` erneut aus.",
+            color=0xff003c,
+            author_user=ctx.author,
+            bot_user=bot.user
+        )
+        await status_msg.edit(embed=embed_warning)
+        return
+
+    status_embed.description = (
+        f"> 👑 **Schritt 1/4 abgeschlossen!**\n"
+        f"> Rollen erstellt: **{roles_created_count}** | Übersprungen: **{roles_skipped_count}**\n\n"
+        f"> 📁 **Schritt 2/4:** Erstelle Kategorien & Kanäle..."
+    )
+    await status_msg.edit(embed=status_embed)
+
+    # ============================
+    # SCHRITT 2: ROLLEN-REFERENZEN AUFBAUEN
+    # ============================
+    r_everyone = guild.default_role
+    r_member = all_roles.get("👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿") or r_everyone
+    r_customer = all_roles.get("🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿") or r_everyone
+    r_premium_buyer = all_roles.get("💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿") or r_everyone
+    r_vip = all_roles.get("🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣") or r_everyone
+    r_booster = all_roles.get("💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿") or r_everyone
+    r_partner = all_roles.get("🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿") or r_everyone
+    r_support = all_roles.get("🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁") or r_everyone
+    r_trial_mod = all_roles.get("🚨│ 𝗩𝗢𝗜𝗗 • 𝗧𝗿𝗶𝗮𝗹 𝗠𝗼𝗱") or r_everyone
+    r_mod = all_roles.get("🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿") or r_everyone
+    r_manager = all_roles.get("⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿") or r_everyone
+    r_admin = all_roles.get("🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻") or r_everyone
+    r_co_owner = all_roles.get("👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿") or r_everyone
+    r_owner = all_roles.get("👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿") or r_everyone
+
+    # ============================
+    # SCHRITT 3: BERECHTIGUNGS-GRUPPEN DEFINIEREN
+    # ============================
     stats_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, connect=False)}
+    
     verify_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)}
     for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner, r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
         if r != r_everyone: verify_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
@@ -1952,16 +1892,15 @@ async def start(ctx):
     for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
         if r != r_everyone: staff_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-    # Höchstsensible Log-Rechte (Nur Manager+)
     log_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
     for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner, r_support, r_trial_mod, r_mod]:
         if r != r_everyone: log_overwrites[r] = discord.PermissionOverwrite(view_channel=False)
     for r in [r_manager, r_admin, r_co_owner, r_owner]:
         if r != r_everyone: log_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-    status_embed.description = "> 📁 Erstelle Server-Struktur & 41 Kanäle..."
-    await status_msg.edit(embed=status_embed)
-
+    # ============================
+    # SCHRITT 4: KATEGORIEN & KANÄLE ERSTELLEN
+    # ============================
     categories_layout = [
         {
             "name": "📊│── 𝗩𝗢𝗜𝗗 • 𝗦𝗧𝗔𝗧𝗦 ──",
@@ -2087,7 +2026,7 @@ async def start(ctx):
                     title="⚠️ FEHLER: Keine Kanäle erstellt!",
                     description=f"> Ich habe keine Berechtigung, Kategorien oder Kanäle zu erstellen!\n\n"
                                 f"**Behebung:**\n"
-                                f"Bitte stelle sicher, dass mein Bot die Berechtigung **'Kanäle verwalten'** (Manage Channels) oder **'Administrator'** besitzt und führe `!Start` erneut aus.",
+                                f"Bitte stelle sicher, dass mein Bot die Berechtigung **'Kanäle verwalten'** (Manage Channels) oder **'Administrator'** besitzt und führe `!setup` erneut aus.",
                     color=0xff003c,
                     author_user=ctx.author,
                     bot_user=bot.user
@@ -2097,10 +2036,10 @@ async def start(ctx):
             except Exception as e:
                 logger.error(f"Fehler bei Kategorie {cat_data['name']}: {e}")
                 continue
-        
+
         for ch_data in cat_data["channels"]:
             current_overwrites = cat_data["overwrites"].copy()
-            
+
             # Custom Overwrites für Lounges
             if ch_data.get("custom_overwrites") == "booster":
                 current_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
@@ -2109,7 +2048,7 @@ async def start(ctx):
                 if r_booster != r_everyone: current_overwrites[r_booster] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
                 for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
                     if r != r_everyone: current_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                
+
             elif ch_data.get("custom_overwrites") == "vip":
                 current_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
                 for r in [r_member, r_customer, r_premium_buyer]:
@@ -2158,10 +2097,17 @@ async def start(ctx):
                         continue
             channels_by_name[ch_data["name"]] = channel
 
-    # 5. SCHRITT: Kanäle befüllen (Embeds mit 1000x schönem Layout)
-    status_embed.description = "> 📝 Richte detaillierte Infokanäle, FAQs und Einladungs-Systeme ein..."
+    status_embed.description = (
+        f"> 👑 **Schritt 1/4:** ✅ Rollen erstellt ({roles_created_count} neu, {roles_skipped_count} übersprungen)\n"
+        f"> 📁 **Schritt 2/4:** ✅ Kategorien & Kanäle erstellt\n"
+        f"> 🔒 **Schritt 3/4:** ✅ Berechtigungen gesetzt\n\n"
+        f"> 📝 **Schritt 4/4:** Sende Embed-Nachrichten in die Kanäle..."
+    )
     await status_msg.edit(embed=status_embed)
 
+    # ============================
+    # SCHRITT 5: EMBED-NACHRICHTEN SENDEN (1:1 Original)
+    # ============================
     c_ticket_mention = channels_by_name["🎟️│create-ticket"].mention if "🎟️│create-ticket" in channels_by_name else "#create-ticket"
     c_ff_mention = channels_by_name["⚙️│fastflags"].mention if "⚙️│fastflags" in channels_by_name else "#fastflags"
 
@@ -2176,11 +2122,11 @@ async def start(ctx):
                         "🚫 │ **𝟮. 𝗞𝗲𝗶𝗻 𝗦𝗽𝗮𝗺 & 𝗙𝗿𝗲𝗺𝗱𝘄𝗲𝗿𝗯𝘂𝗻𝗴**\n"
                         "> Spamming in den Kanälen ist verboten. Das Posten von Werbelinks zu anderen Discord-Servern, Dienstleistungen oder Fremdprodukten (sowohl in Chats als auch per DM) wird permanent gebannt.\n\n"
                         "🛒 │ **𝟯. 𝗦𝗶𝗰𝗵𝗲𝗿𝗲𝗿 & 𝗢𝗳𝗳𝗶𝘇𝗶𝗲𝗹𝗹𝗲𝗿 𝗛𝗮𝗻𝗱𝗲𝗹**\n"
-                        "> Jegliche Verkäufe und Dienstleistungen finden ausschließlich über unser offizielles Ticket-System in %s statt. Privater Handel oder das Anbieten eigener Produkte ist untersagt.\n\n"
+                        f"> Jegliche Verkäufe und Dienstleistungen finden ausschließlich über unser offizielles Ticket-System in {c_ticket_mention} statt. Privater Handel oder das Anbieten eigener Produkte ist untersagt.\n\n"
                         "📎 │ **𝟰. 𝗡𝗦𝗙𝗪 & Unangemessene Inhalte**\n"
                         "> Keine jugendgefährdenden, pornografischen, gewaltverherrlichenden oder illegalen Medien.\n\n"
                         "📌 │ **𝗛𝗶𝗻𝘄𝗲𝗶𝘀**\n"
-                        "> Mit dem Aufenthalt auf diesem Server akzeptierst du die Discord Nutzungsbedingungen (TOS) sowie unsere Serverregeln. Unsere Moderatoren haben das Recht, bei Verstößen ohne Vorwarnung einzugreifen." % c_ticket_mention,
+                        "> Mit dem Aufenthalt auf diesem Server akzeptierst du die Discord Nutzungsbedingungen (TOS) sowie unsere Serverregeln. Unsere Moderatoren haben das Recht, bei Verstößen ohne Vorwarnung einzugreifen.",
             color=0xff003c,
             author_user=ctx.author,
             bot_user=bot.user
@@ -2277,7 +2223,7 @@ async def start(ctx):
         )
         await c_inv.send(embed=embed_inv)
 
-    # G) VERIFY HERE PANEL IN #verify-here
+    # G) VERIFY HERE PANEL
     c_v_here = channels_by_name.get("🔐│verify-here")
     if c_v_here:
         embed_v_here = create_prestige_embed(
@@ -2294,7 +2240,7 @@ async def start(ctx):
         )
         await c_v_here.send(embed=embed_v_here, view=SimpleVerifyButton())
 
-    # H) FIRST VOUCH PREPARATION IN #vouches
+    # H) VOUCHES
     c_vouches = channels_by_name.get("🤝│vouches")
     if c_vouches:
         embed_vouch_placeholder = create_prestige_embed(
@@ -2313,12 +2259,17 @@ async def start(ctx):
     # Statistiken sofort updaten
     await update_stats_channels(guild)
 
+    # ============================
+    # FERTIG!
+    # ============================
     status_embed.title = "🎉 Server-Setup erfolgreich abgeschlossen! 🎉"
     status_embed.description = (
-        f"> 📁 **Kategorien & Kanäle:** 41 Kanäle erfolgreich eingerichtet.\n"
-        f"> 🔒 **Rechte:** Hochsicheres, fehlerfreies Rechtesystem aktiv.\n"
-        f"> 🎟️ **Tickets:** Interaktive Multi-Tickets mit Claim-Funktion sind einsatzbereit!\n\n"
-        f"Nutze `!Start` oder lösche diese Nachricht, falls gewünscht."
+        f"> 👑 **Rollen:** {roles_created_count} erstellt, {roles_skipped_count} übersprungen\n"
+        f"> 📁 **Kategorien & Kanäle:** Alle Kanäle erfolgreich eingerichtet\n"
+        f"> 🔒 **Rechte:** Hochsicheres Rechtesystem für alle Rollen aktiv\n"
+        f"> 📝 **Embeds:** Alle Infos, Regeln, Tickets & Verifikation gesendet\n"
+        f"> 🎟️ **Tickets:** Interaktive Multi-Tickets mit Claim-Funktion einsatzbereit!\n\n"
+        f"Dein Server ist jetzt komplett fertig eingerichtet! 🚀"
     )
     status_embed.color = 0x39ff14
     await status_msg.edit(embed=status_embed)
