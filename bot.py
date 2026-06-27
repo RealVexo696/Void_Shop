@@ -1277,7 +1277,7 @@ class VoidShopBot(commands.Bot):
     async def on_ready(self):
         activity = discord.Activity(
             type=discord.ActivityType.watching, 
-            name="über 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 | !setup"
+            name="über 𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣 | !Setup"
         )
         await self.change_presence(status=discord.Status.online, activity=activity)
         
@@ -1552,9 +1552,7 @@ async def checkbuy_command(ctx, roblox_username: str = None, gamepass_id: int = 
         await status_msg.edit(embed=embed_fail)
 
 
-# --- COMBINED SETUP COMMAND (!setup) ---
-# Vereint die alte !role und !Start Funktionalität in EINEM Befehl.
-# Reihenfolge: 1) Rollen erstellen → 2) Kanäle erstellen → 3) Rechte setzen → 4) Embed-Nachrichten senden
+# --- SETUP BESTÄTIGUNG VIEW ---
 
 class SetupConfirmationView(discord.ui.View):
     def __init__(self, ctx):
@@ -1631,35 +1629,32 @@ async def check_invites_command(ctx, target_user: discord.Member = None):
     await ctx.send(embed=embed)
 
 
-@bot.command(name="setup", aliases=["Setup", "start", "Start", "role", "roles", "Role", "Roles"])
+# --- KOMPLETTER SERVER SETUP BEFEHL (!Setup) ---
+
+@bot.command(name="Setup")
 @commands.guild_only()
 @commands.has_permissions(administrator=True)
 async def setup_command(ctx):
     """
-    KOMPLETTES SERVER-SETUP in einem Befehl:
-    1) Alle 23 Premium-Rollen erstellen (mit Duplikat-Prüfung)
-    2) Alle Kategorien & Kanäle erstellen
-    3) Alle Berechtigungen setzen
-    4) Alle Embed-Nachrichten in die Kanäle senden
+    KOMPLETTES SERVER-SETUP in einem einzigen Befehl.
+    Reihenfolge: Rollen → Kanäle → Rechte → Embeds
     """
     guild = ctx.guild
     bot_member = guild.me
-    bot_permissions = bot_member.guild_permissions
 
-    # ============================
-    # BESTÄTIGUNG VOM USER HOLEN
-    # ============================
+    # ═══════════════════════════════════════
+    # BESTÄTIGUNG HOLEN
+    # ═══════════════════════════════════════
     embed_choice = create_prestige_embed(
         title="⚠️ 𝗩𝗢𝗜𝗗 • SERVER SETUP INITIALISIERUNG ⚠️",
         description=f"Hallo {ctx.author.mention},\n\ndu bist dabei, das **Prestige Server-Layout** für **𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣** aufzubauen.\n"
                     f"Dieses Setup generiert:\n"
                     f"> 👑 │ **23 Premium-Rollen** mit optimalen Berechtigungen\n"
-                    f"> 📁 │ **7 Hauptkategorien, 1 Log-Kategorie & 1 Stats-Kategorie**\n"
-                    f"> 💬 │ **27 Textkanäle, 7 Voicekanäle & 8 professionelle Log-Kanäle (Gesamt: 42 Kanäle)**\n"
+                    f"> 📁 │ **10 Kategorien mit insgesamt 42 Kanälen**\n"
                     f"> ⚙️ │ **Vollständiges Embed-Design in allen Infokanälen**\n\n"
                     f"Bitte wähle eine Option aus:\n\n"
-                    f"🧹 **Komplett neu aufsetzen:** Löscht alle Kanäle (außer den aktuellen) und baut neu auf.\n"
-                    f"➕ **Nur hinzufügen:** Ergänzt das Layout parallel.",
+                    f"🧹 **Komplett neu aufsetzen:** Löscht alle Kanäle & Rollen und baut neu auf.\n"
+                    f"➕ **Nur hinzufügen:** Ergänzt das Layout parallel (überspringt Vorhandenes).",
         color=0xff003c,
         author_user=ctx.author,
         bot_user=bot.user
@@ -1680,7 +1675,6 @@ async def setup_command(ctx):
         await confirm_msg.edit(embed=embed_cancel, view=None)
         return
 
-    # Status-Nachricht erstellen
     status_embed = create_prestige_embed(
         title="⚙️ Setup-Prozess läuft...",
         description="> ⏳ Initialisiere...",
@@ -1691,342 +1685,398 @@ async def setup_command(ctx):
     status_msg = await ctx.send(embed=status_embed)
     await confirm_msg.delete()
 
-    # ============================
+    # ═══════════════════════════════════════
     # SCHRITT 0: RESET (falls gewählt)
-    # ============================
+    # ═══════════════════════════════════════
     if view.value == "reset":
         status_embed.description = "> 🧹 Lösche alte Kanäle & Rollen..."
         await status_msg.edit(embed=status_embed)
 
-        for channel in guild.channels:
+        for channel in list(guild.channels):
             if channel.id != ctx.channel.id:
                 try:
                     await channel.delete()
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.15)
                 except Exception:
                     pass
 
-        for role in guild.roles:
+        for role in list(guild.roles):
             if role != guild.default_role and not role.managed and role < bot_member.top_role:
                 try:
                     await role.delete()
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.15)
                 except Exception:
                     pass
 
-    # ============================
+        await asyncio.sleep(1)
+
+    # ═══════════════════════════════════════
     # SCHRITT 1: ALLE 23 ROLLEN ERSTELLEN
-    # ============================
+    # ═══════════════════════════════════════
     status_embed.description = "> 👑 **Schritt 1/4:** Erstelle 23 Premium-Rollen..."
     await status_msg.edit(embed=status_embed)
 
-    # Rollen-Definition (von NIEDRIGSTER nach HÖCHSTER Priorität)
-    # Die zuerst erstellten landen unten, die letzten oben in der Hierarchie
+    # Rollen von UNTEN nach OBEN (erste wird niedrigste, letzte wird höchste)
     role_definitions = [
-        # --- BASE ROLES (ganz unten) ---
-        ("🤖│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝘁", 0x4a00a8, False),
-        ("👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿", 0xa0a0a0, False),
-        # --- NOTIFICATION ROLES ---
-        ("📦│ 𝗣𝗿𝗼𝗱𝘂𝗰𝘁 𝗣𝗶𝗻𝗴", 0x32cd32, False),
-        ("🎁│ 𝗚𝗶𝘃𝗲𝗮𝘄𝗮𝘆 𝗣𝗶𝗻𝗴", 0xff4500, False),
-        ("📢│ 𝗔𝗻𝗻𝗼𝘂𝗻𝗰𝗲𝗺𝗲𝗻𝘁 𝗣𝗶𝗻𝗴", 0x7289da, False),
-        # --- REWARD ROLES (BUYER LEVELS) ---
-        ("🥉│ 𝗕𝗿𝗼𝗻𝘇𝗲 𝗕𝘂𝘆𝗲𝗿", 0xcd7f32, False),
-        ("🥈│ 𝗦𝗶𝗹𝘃𝗲𝗿 𝗕𝘂𝘆𝗲𝗿", 0xc0c0c0, False),
-        ("🥇│ 𝗚𝗼𝗹𝗱 𝗕𝘂𝘆𝗲𝗿", 0xffd700, False),
-        ("💎│ 𝗗𝗶𝗮𝗺𝗼𝗻𝗱 𝗕𝘂𝘆𝗲𝗿", 0xb9f2ff, False),
-        # --- CUSTOMER ROLES ---
-        ("🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿", 0xffff00, False),
-        ("💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿", 0x00ffff, False),
-        # --- SPECIAL ROLES ---
-        ("👤│ 𝗩𝗢𝗜𝗗 • 𝗩𝗲𝗿𝗶𝗳𝗶𝗲𝗱", 0x7f8c8d, False),
-        ("🫂│ 𝗩𝗢𝗜𝗗 • 𝗙𝗿𝗶𝗲𝗻𝗱", 0xff69b4, False),
-        ("🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣", 0xffd700, False),
-        ("💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿", 0xf47fff, False),
-        ("🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿", 0xffa500, False),
-        # --- STAFF ROLES (oben) ---
-        ("🚨│ 𝗩𝗢𝗜𝗗 • 𝗧𝗿𝗶𝗮𝗹 𝗠𝗼𝗱", 0xadff2f, False),
-        ("🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁", 0x20b2aa, False),
-        ("🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿", 0x39ff14, False),
-        ("⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿", 0x00a8a8, True),
-        ("🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻", 0x00f0ff, True),
-        ("👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿", 0xff3366, True),
-        ("👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿", 0xff003c, True),
+        # (Name, Hex-Farbe)
+        # --- BASE ---
+        ("🤖│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝘁", 0x4a00a8),
+        ("👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿", 0xa0a0a0),
+        # --- NOTIFICATION ---
+        ("📦│ 𝗣𝗿𝗼𝗱𝘂𝗰𝘁 𝗣𝗶𝗻𝗴", 0x32cd32),
+        ("🎁│ 𝗚𝗶𝘃𝗲𝗮𝘄𝗮𝘆 𝗣𝗶𝗻𝗴", 0xff4500),
+        ("📢│ 𝗔𝗻𝗻𝗼𝘂𝗻𝗰𝗲𝗺𝗲𝗻𝘁 𝗣𝗶𝗻𝗴", 0x7289da),
+        # --- BUYER LEVELS ---
+        ("🥉│ 𝗕𝗿𝗼𝗻𝘇𝗲 𝗕𝘂𝘆𝗲𝗿", 0xcd7f32),
+        ("🥈│ 𝗦𝗶𝗹𝘃𝗲𝗿 𝗕𝘂𝘆𝗲𝗿", 0xc0c0c0),
+        ("🥇│ 𝗚𝗼𝗹𝗱 𝗕𝘂𝘆𝗲𝗿", 0xffd700),
+        ("💎│ 𝗗𝗶𝗮𝗺𝗼𝗻𝗱 𝗕𝘂𝘆𝗲𝗿", 0xb9f2ff),
+        # --- CUSTOMER ---
+        ("🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿", 0xffff00),
+        ("💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿", 0x00ffff),
+        # --- SPECIAL ---
+        ("👤│ 𝗩𝗢𝗜𝗗 • 𝗩𝗲𝗿𝗶𝗳𝗶𝗲𝗱", 0x7f8c8d),
+        ("🫂│ 𝗩𝗢𝗜𝗗 • 𝗙𝗿𝗶𝗲𝗻𝗱", 0xff69b4),
+        ("🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣", 0xffd700),
+        ("💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿", 0xf47fff),
+        ("🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿", 0xffa500),
+        # --- STAFF ---
+        ("🚨│ 𝗩𝗢𝗜𝗗 • 𝗧𝗿𝗶𝗮𝗹 𝗠𝗼𝗱", 0xadff2f),
+        ("🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁", 0x20b2aa),
+        ("🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿", 0x39ff14),
+        ("⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿", 0x00a8a8),
+        ("🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻", 0x00f0ff),
+        ("👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿", 0xff3366),
+        ("👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿", 0xff003c),
     ]
 
-    all_roles = {}  # name -> Role object
-    roles_created_count = 0
-    roles_skipped_count = 0
-    roles_failed_count = 0
+    all_roles = {}
+    roles_created = 0
+    roles_skipped = 0
+    roles_failed = 0
+    role_errors = []
 
-    for role_name, color_hex, is_admin in role_definitions:
-        existing_role = discord.utils.get(guild.roles, name=role_name)
-        if existing_role:
-            all_roles[role_name] = existing_role
-            roles_skipped_count += 1
+    for role_name, color_hex in role_definitions:
+        # Prüfe ob Rolle bereits existiert
+        existing = discord.utils.get(guild.roles, name=role_name)
+        if existing:
+            all_roles[role_name] = existing
+            roles_skipped += 1
             continue
 
+        # Erstelle Rolle OHNE spezielle Permissions (sauber & fehlerfrei)
+        # Permissions werden später über Kanal-Overwrites gesteuert!
         try:
-            perms = discord.Permissions.none()
-            if is_admin and bot_permissions.administrator:
-                perms.administrator = True
-            elif "Moderator" in role_name or "Manager" in role_name:
-                requested_perms = [
-                    ("view_channel", True), ("send_messages", True), ("manage_messages", True),
-                    ("kick_members", True), ("ban_members", True), ("mute_members", True),
-                    ("deafen_members", True), ("move_members", True), ("change_nickname", True),
-                    ("read_message_history", True), ("attach_files", True), ("embed_links", True),
-                    ("add_reactions", True), ("use_external_emojis", True)
-                ]
-                for perm_name, req_val in requested_perms:
-                    if getattr(bot_permissions, perm_name, False):
-                        setattr(perms, perm_name, True)
-            else:
-                requested_perms = [
-                    ("view_channel", True), ("send_messages", True), ("read_message_history", True),
-                    ("attach_files", True), ("embed_links", True), ("add_reactions", True),
-                    ("use_external_emojis", True), ("change_nickname", True)
-                ]
-                for perm_name, req_val in requested_perms:
-                    if getattr(bot_permissions, perm_name, False):
-                        setattr(perms, perm_name, True)
-
             new_role = await guild.create_role(
                 name=role_name,
                 color=discord.Color(color_hex),
-                permissions=perms,
                 hoist=True,
-                mentionable=True
+                mentionable=True,
+                reason="𝗩𝗢𝗜𝗗 Setup - Automatische Rollenerstellung"
             )
             all_roles[role_name] = new_role
-            roles_created_count += 1
-            await asyncio.sleep(0.15)
-        except discord.Forbidden:
-            try:
-                new_role = await guild.create_role(
-                    name=role_name,
-                    color=discord.Color(color_hex),
-                    permissions=discord.Permissions.default(),
-                    hoist=True,
-                    mentionable=True
-                )
-                all_roles[role_name] = new_role
-                roles_created_count += 1
-                await asyncio.sleep(0.15)
-            except discord.Forbidden:
-                roles_failed_count += 1
-                logger.error(f"Konnte Rolle {role_name} überhaupt nicht erstellen.")
+            roles_created += 1
+            logger.info(f"✅ Rolle erstellt: {role_name}")
+            await asyncio.sleep(0.3)
+        except discord.Forbidden as e:
+            roles_failed += 1
+            role_errors.append(f"{role_name}: Keine Berechtigung")
+            logger.error(f"❌ Forbidden bei Rolle {role_name}: {e}")
+        except discord.HTTPException as e:
+            roles_failed += 1
+            role_errors.append(f"{role_name}: HTTP-Fehler ({e.status})")
+            logger.error(f"❌ HTTPException bei Rolle {role_name}: {e}")
         except Exception as e:
-            roles_failed_count += 1
-            logger.error(f"Fehler bei {role_name}: {e}")
+            roles_failed += 1
+            role_errors.append(f"{role_name}: {type(e).__name__}")
+            logger.error(f"❌ Fehler bei Rolle {role_name}: {e}")
 
-    # Prüfung: Wenn keine einzige Rolle erstellt werden konnte
-    if roles_failed_count > 0 and roles_created_count == 0 and roles_skipped_count == 0:
-        embed_warning = create_prestige_embed(
+    # Falls NICHTS erstellt werden konnte → Abbruch mit Hilfestellung
+    if roles_created == 0 and roles_skipped == 0:
+        error_list = "\n".join(f"> ❌ {err}" for err in role_errors[:10])
+        embed_fail = create_prestige_embed(
             title="⚠️ FEHLER: Keine Rollen erstellt!",
             description=f"> Es konnte **keine einzige Rolle** erstellt werden!\n\n"
-                        f"**Ursache:**\n"
-                        f"Dem Bot fehlt im Server die Berechtigung **'Rollen verwalten'** (Manage Roles).\n\n"
-                        f"**So behebst du diesen Fehler:**\n"
-                        f"1. Gehe in deine **Server-Einstellungen** ➔ **Rollen**.\n"
-                        f"2. Klicke auf die Rolle deines Bots (`𝗩𝗢𝗜𝗗ﾒ𝗦𝗛𝗢𝗣`).\n"
-                        f"3. Aktiviere die Berechtigung **'Rollen verwalten'** (oder Administrator).\n"
-                        f"4. Ziehe meine Rolle ganz nach oben.\n"
-                        f"5. Führe `!setup` erneut aus.",
+                        f"**Fehlerdetails:**\n{error_list}\n\n"
+                        f"**So behebst du das:**\n"
+                        f"1. **Server-Einstellungen** ➔ **Rollen**\n"
+                        f"2. Ziehe die Bot-Rolle **ganz nach oben** (über alle anderen Rollen)\n"
+                        f"3. Gib der Bot-Rolle **Administrator**-Berechtigung\n"
+                        f"4. Führe `!Setup` erneut aus",
             color=0xff003c,
             author_user=ctx.author,
             bot_user=bot.user
         )
-        await status_msg.edit(embed=embed_warning)
+        await status_msg.edit(embed=embed_fail)
         return
 
+    # Status-Update nach Rollen
+    error_note = ""
+    if roles_failed > 0:
+        error_note = f"\n> ⚠️ **{roles_failed} Rollen fehlgeschlagen** (Bot-Rolle höher ziehen!)"
+
     status_embed.description = (
-        f"> 👑 **Schritt 1/4 abgeschlossen!**\n"
-        f"> Rollen erstellt: **{roles_created_count}** | Übersprungen: **{roles_skipped_count}**\n\n"
+        f"> 👑 **Schritt 1/4:** ✅ Rollen fertig!\n"
+        f"> Erstellt: **{roles_created}** | Übersprungen: **{roles_skipped}**{error_note}\n\n"
         f"> 📁 **Schritt 2/4:** Erstelle Kategorien & Kanäle..."
     )
     await status_msg.edit(embed=status_embed)
 
-    # ============================
-    # SCHRITT 2: ROLLEN-REFERENZEN AUFBAUEN
-    # ============================
+    # ═══════════════════════════════════════
+    # SCHRITT 2: ROLLEN-REFERENZEN
+    # ═══════════════════════════════════════
     r_everyone = guild.default_role
-    r_member = all_roles.get("👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿") or r_everyone
-    r_customer = all_roles.get("🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿") or r_everyone
-    r_premium_buyer = all_roles.get("💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿") or r_everyone
-    r_vip = all_roles.get("🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣") or r_everyone
-    r_booster = all_roles.get("💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿") or r_everyone
-    r_partner = all_roles.get("🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿") or r_everyone
-    r_support = all_roles.get("🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁") or r_everyone
-    r_trial_mod = all_roles.get("🚨│ 𝗩𝗢𝗜𝗗 • 𝗧𝗿𝗶𝗮𝗹 𝗠𝗼𝗱") or r_everyone
-    r_mod = all_roles.get("🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿") or r_everyone
-    r_manager = all_roles.get("⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿") or r_everyone
-    r_admin = all_roles.get("🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻") or r_everyone
-    r_co_owner = all_roles.get("👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿") or r_everyone
-    r_owner = all_roles.get("👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿") or r_everyone
 
-    # ============================
-    # SCHRITT 3: BERECHTIGUNGS-GRUPPEN DEFINIEREN
-    # ============================
-    stats_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, connect=False)}
-    
-    verify_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)}
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner, r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: verify_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
+    def get_role(name):
+        """Holt Rolle aus all_roles dict, Fallback auf @everyone."""
+        return all_roles.get(name, r_everyone)
 
-    info_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: info_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
-        if r != r_everyone: info_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
+    r_member = get_role("👥│ 𝗩𝗢𝗜𝗗 • 𝗠𝗲𝗺𝗯𝗲𝗿")
+    r_customer = get_role("🛒│ 𝗩𝗢𝗜𝗗 • 𝗖𝘂𝘀𝘁𝗼𝗺𝗲𝗿")
+    r_premium_buyer = get_role("💎│ 𝗩𝗢𝗜𝗗 • 𝗣𝗿𝗲𝗺𝗶𝘂𝗺 𝗕𝘂𝘆𝗲𝗿")
+    r_vip = get_role("🌟│ 𝗩𝗢𝗜𝗗 • 𝗩𝗜𝗣")
+    r_booster = get_role("💎│ 𝗩𝗢𝗜𝗗 • 𝗕𝗼𝗼𝘀𝘁𝗲𝗿")
+    r_partner = get_role("🤝│ 𝗩𝗢𝗜𝗗 • 𝗣𝗮𝗿𝘁𝗻𝗲𝗿")
+    r_support = get_role("🎫│ 𝗩𝗢𝗜𝗗 • 𝗦𝘂𝗽𝗽𝗼𝗿𝘁")
+    r_trial_mod = get_role("🚨│ 𝗩𝗢𝗜𝗗 • 𝗧𝗿𝗶𝗮𝗹 𝗠𝗼𝗱")
+    r_mod = get_role("🛡️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗼𝗱𝗲𝗿𝗮𝘁𝗼𝗿")
+    r_manager = get_role("⚙️│ 𝗩𝗢𝗜𝗗 • 𝗠𝗮𝗻𝗮𝗴𝗲𝗿")
+    r_admin = get_role("🛠️│ 𝗩𝗢𝗜𝗗 • 𝗔𝗱𝗺𝗶𝗻")
+    r_co_owner = get_role("👑│ 𝗩𝗢𝗜𝗗 • 𝗖𝗼-𝗢𝘄𝗻𝗲𝗿")
+    r_owner = get_role("👑│ 𝗩𝗢𝗜𝗗 • 𝗢𝘄𝗻𝗲𝗿")
 
-    community_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: community_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
-        if r != r_everyone: community_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True, add_reactions=True, read_message_history=True)
+    # Rollen-Gruppen für einfache Zuweisung
+    staff_roles = [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]
+    member_roles = [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]
+    high_staff = [r_manager, r_admin, r_co_owner, r_owner]
 
-    staff_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner]:
-        if r != r_everyone: staff_overwrites[r] = discord.PermissionOverwrite(view_channel=False)
-    for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: staff_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+    # ═══════════════════════════════════════
+    # SCHRITT 3: BERECHTIGUNGS-OVERWRITES
+    # ═══════════════════════════════════════
+    def build_overwrites(mode):
+        """Erstellt Overwrites basierend auf dem Kanal-Typ."""
+        ow = {}
+        if mode == "stats":
+            ow[r_everyone] = discord.PermissionOverwrite(view_channel=True, connect=False)
 
-    log_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-    for r in [r_member, r_customer, r_premium_buyer, r_vip, r_booster, r_partner, r_support, r_trial_mod, r_mod]:
-        if r != r_everyone: log_overwrites[r] = discord.PermissionOverwrite(view_channel=False)
-    for r in [r_manager, r_admin, r_co_owner, r_owner]:
-        if r != r_everyone: log_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+        elif mode == "verify":
+            ow[r_everyone] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
+            for r in staff_roles + member_roles:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
 
-    # ============================
+        elif mode == "info":
+            ow[r_everyone] = discord.PermissionOverwrite(view_channel=False)
+            for r in staff_roles:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
+            for r in member_roles:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=True, send_messages=False, read_message_history=True)
+
+        elif mode == "community":
+            ow[r_everyone] = discord.PermissionOverwrite(view_channel=False)
+            for r in staff_roles:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, read_message_history=True)
+            for r in member_roles:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True, add_reactions=True, read_message_history=True)
+
+        elif mode == "staff":
+            ow[r_everyone] = discord.PermissionOverwrite(view_channel=False)
+            for r in member_roles:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=False)
+            for r in staff_roles:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+        elif mode == "logs":
+            ow[r_everyone] = discord.PermissionOverwrite(view_channel=False)
+            for r in member_roles + [r_support, r_trial_mod, r_mod]:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=False)
+            for r in high_staff:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+
+        elif mode == "booster_lounge":
+            ow[r_everyone] = discord.PermissionOverwrite(view_channel=False)
+            for r in [r_member, r_customer, r_premium_buyer, r_vip]:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=False)
+            if r_booster != r_everyone:
+                ow[r_booster] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            for r in staff_roles:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+        elif mode == "vip_lounge":
+            ow[r_everyone] = discord.PermissionOverwrite(view_channel=False)
+            for r in [r_member, r_customer, r_premium_buyer]:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=False)
+            if r_booster != r_everyone:
+                ow[r_booster] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            if r_vip != r_everyone:
+                ow[r_vip] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            for r in staff_roles:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+        elif mode == "customer_lounge":
+            ow[r_everyone] = discord.PermissionOverwrite(view_channel=False)
+            if r_member != r_everyone:
+                ow[r_member] = discord.PermissionOverwrite(view_channel=False)
+            for r in [r_booster, r_customer, r_premium_buyer, r_vip]:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            for r in staff_roles:
+                if r != r_everyone:
+                    ow[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+        return ow
+
+    # ═══════════════════════════════════════
     # SCHRITT 4: KATEGORIEN & KANÄLE ERSTELLEN
-    # ============================
+    # ═══════════════════════════════════════
     categories_layout = [
         {
             "name": "📊│── 𝗩𝗢𝗜𝗗 • 𝗦𝗧𝗔𝗧𝗦 ──",
-            "overwrites": stats_overwrites,
+            "mode": "stats",
             "channels": [
-                {"name": "👥│Mitglieder: 0", "type": "voice", "description": ""},
-                {"name": "💎│Booster: 0", "type": "voice", "description": ""},
-                {"name": "🛒│Kunden: 0", "type": "voice", "description": ""},
-                {"name": "🎟️│Offene Tickets: 0", "type": "voice", "description": ""}
+                {"name": "👥│Mitglieder: 0", "type": "voice"},
+                {"name": "💎│Booster: 0", "type": "voice"},
+                {"name": "🛒│Kunden: 0", "type": "voice"},
+                {"name": "🎟️│Offene Tickets: 0", "type": "voice"},
             ]
         },
         {
             "name": "🔐│── 𝗩𝗢𝗜𝗗 • 𝗩𝗘𝗥𝗜𝗙𝗬 ──",
-            "overwrites": verify_overwrites,
+            "mode": "verify",
             "channels": [
-                {"name": "👋│willkommen", "type": "text", "description": "Begrüßungskanal für neue Mitglieder"},
-                {"name": "🔐│verify-here", "type": "text", "description": "Klicke unten auf den Button, um dich freizuschalten!"}
+                {"name": "👋│willkommen", "type": "text", "topic": "Begrüßungskanal für neue Mitglieder"},
+                {"name": "🔐│verify-here", "type": "text", "topic": "Klicke unten auf den Button, um dich freizuschalten!"},
             ]
         },
         {
             "name": "📢│── 𝗩𝗢𝗜𝗗 • 𝗜𝗡𝗙𝗢 ──",
-            "overwrites": info_overwrites,
+            "mode": "info",
             "channels": [
-                {"name": "📢│news", "type": "text", "description": "Wichtige Ankündigungen & News"},
-                {"name": "📜│rules", "type": "text", "description": "Das Serverregelwerk"},
-                {"name": "💨│aufwiedersehen", "type": "text", "description": "Verabschiedungskanal"},
-                {"name": "🎁│giveaways", "type": "text", "description": "Spannende Giveaways & Gewinne"},
-                {"name": "🤝│vouches", "type": "text", "description": "Erfahrungen unserer Käufer"},
-                {"name": "📩│invites", "type": "text", "description": "Lade Freunde ein für Belohnungen!"},
-                {"name": "🔗│partners", "type": "text", "description": "Unsere Partner-Server"}
+                {"name": "📢│news", "type": "text", "topic": "Wichtige Ankündigungen & News"},
+                {"name": "📜│rules", "type": "text", "topic": "Das Serverregelwerk"},
+                {"name": "💨│aufwiedersehen", "type": "text", "topic": "Verabschiedungskanal"},
+                {"name": "🎁│giveaways", "type": "text", "topic": "Spannende Giveaways & Gewinne"},
+                {"name": "🤝│vouches", "type": "text", "topic": "Erfahrungen unserer Käufer"},
+                {"name": "📩│invites", "type": "text", "topic": "Lade Freunde ein für Belohnungen!"},
+                {"name": "🔗│partners", "type": "text", "topic": "Unsere Partner-Server"},
             ]
         },
         {
             "name": "🛒│── 𝗩𝗢𝗜𝗗 • 𝗦𝗛𝗢𝗣 ──",
-            "overwrites": info_overwrites,
+            "mode": "info",
             "channels": [
-                {"name": "👕│tshirt-templates", "type": "text", "description": "Exklusive T-Shirt Vorlagen für Roblox"},
-                {"name": "⚙️│fastflags", "type": "text", "description": "FPS & Performance Optimierungen"},
-                {"name": "🖥️│discord-templates", "type": "text", "description": "Schicke Discord Server Vorlagen"},
-                {"name": "📦│products", "type": "text", "description": "Unsere Produkt- & Preisübersicht"},
-                {"name": "🛒│how-to-buy", "type": "text", "description": "Wie du bei uns einkaufen kannst"},
-                {"name": "📈│updates", "type": "text", "description": "Entwicklungs-Updates & Produktnews"},
-                {"name": "🛍️│live-käufe", "type": "text", "description": "Live Feier-Ticker für erfolgreiche Shop-Käufe"}
+                {"name": "👕│tshirt-templates", "type": "text", "topic": "Exklusive T-Shirt Vorlagen für Roblox"},
+                {"name": "⚙️│fastflags", "type": "text", "topic": "FPS & Performance Optimierungen"},
+                {"name": "🖥️│discord-templates", "type": "text", "topic": "Schicke Discord Server Vorlagen"},
+                {"name": "📦│products", "type": "text", "topic": "Unsere Produkt- & Preisübersicht"},
+                {"name": "🛒│how-to-buy", "type": "text", "topic": "Wie du bei uns einkaufen kannst"},
+                {"name": "📈│updates", "type": "text", "topic": "Entwicklungs-Updates & Produktnews"},
+                {"name": "🛍️│live-käufe", "type": "text", "topic": "Live Feier-Ticker für erfolgreiche Shop-Käufe"},
             ]
         },
         {
             "name": "💬│── 𝗩𝗢𝗜𝗗 • 𝗖𝗛𝗔𝗧 ──",
-            "overwrites": community_overwrites,
+            "mode": "community",
             "channels": [
-                {"name": "💬│general-chat", "type": "text", "description": "Der Hauptchat für jedermann"},
-                {"name": "📷│media-and-showcase", "type": "text", "description": "Teile Bilder, Videos oder Avatare"},
-                {"name": "🎨│clothing-showcase", "type": "text", "description": "Zeige deine eigenen Roblox-Kleidungsdesigns!"},
-                {"name": "🖥️│setup-showcase", "type": "text", "description": "Zeige deinen Gaming-Setup oder Studio-Setup"},
-                {"name": "📈│trading", "type": "text", "description": "Tausche und handle mit Roblox-Gegenständen"},
-                {"name": "🤝│suggestions", "type": "text", "description": "Deine Verbesserungsvorschläge für den Shop"},
-                {"name": "🤖│bot-commands", "type": "text", "description": "Nutze die Bot-Befehle hier"}
+                {"name": "💬│general-chat", "type": "text", "topic": "Der Hauptchat für jedermann"},
+                {"name": "📷│media-and-showcase", "type": "text", "topic": "Teile Bilder, Videos oder Avatare"},
+                {"name": "🎨│clothing-showcase", "type": "text", "topic": "Zeige deine eigenen Roblox-Kleidungsdesigns!"},
+                {"name": "🖥️│setup-showcase", "type": "text", "topic": "Zeige deinen Gaming-Setup oder Studio-Setup"},
+                {"name": "📈│trading", "type": "text", "topic": "Tausche und handle mit Roblox-Gegenständen"},
+                {"name": "🤝│suggestions", "type": "text", "topic": "Deine Verbesserungsvorschläge für den Shop"},
+                {"name": "🤖│bot-commands", "type": "text", "topic": "Nutze die Bot-Befehle hier"},
             ]
         },
         {
             "name": "🎙️│── 𝗩𝗢𝗜𝗗 • 𝗧𝗔𝗟𝗞 ──",
-            "overwrites": community_overwrites,
+            "mode": "community",
             "channels": [
-                {"name": "🔊│Lobby • Public", "type": "voice", "description": ""},
-                {"name": "🔊│Lounge • Chill", "type": "voice", "description": ""},
-                {"name": "🔊│Roblox • Talk", "type": "voice", "description": ""},
-                {"name": "🔊│Gaming • Duo", "type": "voice", "description": ""},
-                {"name": "🔊│Gaming • Squad", "type": "voice", "description": ""},
-                {"name": "🔊│Support • Voice", "type": "voice", "description": ""}
+                {"name": "🔊│Lobby • Public", "type": "voice"},
+                {"name": "🔊│Lounge • Chill", "type": "voice"},
+                {"name": "🔊│Roblox • Talk", "type": "voice"},
+                {"name": "🔊│Gaming • Duo", "type": "voice"},
+                {"name": "🔊│Gaming • Squad", "type": "voice"},
+                {"name": "🔊│Support • Voice", "type": "voice"},
             ]
         },
         {
             "name": "💎│── 𝗩𝗢𝗜𝗗 • 𝗟𝗢𝗨𝗡𝗚𝗘 ──",
-            "overwrites": community_overwrites,
+            "mode": "community",
             "channels": [
-                {"name": "💎│booster-lounge", "type": "text", "description": "Spezialchat für Server-Booster", "custom_overwrites": "booster"},
-                {"name": "🌟│vip-lounge", "type": "text", "description": "Exklusiver Chat für VIP-Kunden", "custom_overwrites": "vip"},
-                {"name": "🛒│customer-lounge", "type": "text", "description": "Austauschbereich für alle Käufer", "custom_overwrites": "customer"}
+                {"name": "💎│booster-lounge", "type": "text", "topic": "Spezialchat für Server-Booster", "overwrite_mode": "booster_lounge"},
+                {"name": "🌟│vip-lounge", "type": "text", "topic": "Exklusiver Chat für VIP-Kunden", "overwrite_mode": "vip_lounge"},
+                {"name": "🛒│customer-lounge", "type": "text", "topic": "Austauschbereich für alle Käufer", "overwrite_mode": "customer_lounge"},
             ]
         },
         {
             "name": "🎟️│── 𝗩𝗢𝗜𝗗 • 𝗦𝗨𝗣𝗣𝗢𝗥𝗧 ──",
-            "overwrites": info_overwrites,
+            "mode": "info",
             "channels": [
-                {"name": "🎟️│create-ticket", "type": "text", "description": "Erstelle ein Support- oder Kauf-Ticket"},
-                {"name": "❓│faq", "type": "text", "description": "Häufig gestellte Fragen (FAQs)"}
+                {"name": "🎟️│create-ticket", "type": "text", "topic": "Erstelle ein Support- oder Kauf-Ticket"},
+                {"name": "❓│faq", "type": "text", "topic": "Häufig gestellte Fragen (FAQs)"},
             ]
         },
         {
             "name": "🔒│── 𝗩𝗢𝗜𝗗 • 𝗦𝗧𝗔𝗙𝗙 ──",
-            "overwrites": staff_overwrites,
+            "mode": "staff",
             "channels": [
-                {"name": "🔒│staff-chat", "type": "text", "description": "Das interne Besprechungszimmer"},
-                {"name": "🛠️│mod-commands", "type": "text", "description": "Eingabe von Admin- und Moderations-Commands"},
-                {"name": "🔊│Staff • Voice", "type": "voice", "description": ""}
+                {"name": "🔒│staff-chat", "type": "text", "topic": "Das interne Besprechungszimmer"},
+                {"name": "🛠️│mod-commands", "type": "text", "topic": "Eingabe von Admin- und Moderations-Commands"},
+                {"name": "🔊│Staff • Voice", "type": "voice"},
             ]
         },
         {
             "name": "📁│── 𝗩𝗢𝗜𝗗 • 𝗟𝗢𝗚𝗦 ──",
-            "overwrites": log_overwrites,
+            "mode": "logs",
             "channels": [
-                {"name": "💬│voice-logs", "type": "text", "description": "Logs für Sprachkanäle"},
-                {"name": "🔨│ban-kick-logs", "type": "text", "description": "Logs für Banns, Kicks und Timeouts"},
-                {"name": "📝│message-logs", "type": "text", "description": "Logs für gelöschte & editierte Nachrichten"},
-                {"name": "📩│invite-logs", "type": "text", "description": "Logs für erstellte & genutzte Einladungslinks"},
-                {"name": "📥│join-leave-logs", "type": "text", "description": "Logs für Serverbeitritte & Austritte"},
-                {"name": "💾│ticket-logs", "type": "text", "description": "Ticket-Protokolle & Transkripte"},
-                {"name": "⚙️│system-logs", "type": "text", "description": "System-Logs für Kanäle & Rollen"},
-                {"name": "🚨│security-logs", "type": "text", "description": "Logs für blockierte Scam- & Phishing-Links"}
+                {"name": "💬│voice-logs", "type": "text", "topic": "Logs für Sprachkanäle"},
+                {"name": "🔨│ban-kick-logs", "type": "text", "topic": "Logs für Banns, Kicks und Timeouts"},
+                {"name": "📝│message-logs", "type": "text", "topic": "Logs für gelöschte & editierte Nachrichten"},
+                {"name": "📩│invite-logs", "type": "text", "topic": "Logs für erstellte & genutzte Einladungslinks"},
+                {"name": "📥│join-leave-logs", "type": "text", "topic": "Logs für Serverbeitritte & Austritte"},
+                {"name": "💾│ticket-logs", "type": "text", "topic": "Ticket-Protokolle & Transkripte"},
+                {"name": "⚙️│system-logs", "type": "text", "topic": "System-Logs für Kanäle & Rollen"},
+                {"name": "🚨│security-logs", "type": "text", "topic": "Logs für blockierte Scam- & Phishing-Links"},
             ]
-        }
+        },
     ]
 
     channels_by_name = {}
+    channels_created = 0
 
     for cat_data in categories_layout:
+        cat_overwrites = build_overwrites(cat_data["mode"])
+
+        # Kategorie finden oder erstellen
         category = discord.utils.get(guild.categories, name=cat_data["name"])
         if not category:
             try:
-                category = await guild.create_category(name=cat_data["name"], overwrites=cat_data["overwrites"])
-                await asyncio.sleep(0.2)
+                category = await guild.create_category(
+                    name=cat_data["name"],
+                    overwrites=cat_overwrites,
+                    reason="𝗩𝗢𝗜𝗗 Setup"
+                )
+                await asyncio.sleep(0.3)
             except discord.Forbidden:
                 embed_err = create_prestige_embed(
-                    title="⚠️ FEHLER: Keine Kanäle erstellt!",
-                    description=f"> Ich habe keine Berechtigung, Kategorien oder Kanäle zu erstellen!\n\n"
-                                f"**Behebung:**\n"
-                                f"Bitte stelle sicher, dass mein Bot die Berechtigung **'Kanäle verwalten'** (Manage Channels) oder **'Administrator'** besitzt und führe `!setup` erneut aus.",
+                    title="⚠️ FEHLER: Keine Berechtigung für Kanäle!",
+                    description="> Ich kann keine Kategorien/Kanäle erstellen!\n\n"
+                                "**Behebung:**\n"
+                                "> 1. Bot-Rolle in den Server-Einstellungen ganz nach oben ziehen\n"
+                                "> 2. **Administrator**-Berechtigung aktivieren\n"
+                                "> 3. `!Setup` erneut ausführen",
                     color=0xff003c,
                     author_user=ctx.author,
                     bot_user=bot.user
@@ -2034,80 +2084,61 @@ async def setup_command(ctx):
                 await status_msg.edit(embed=embed_err)
                 return
             except Exception as e:
-                logger.error(f"Fehler bei Kategorie {cat_data['name']}: {e}")
+                logger.error(f"Kategorie-Fehler {cat_data['name']}: {e}")
                 continue
 
+        # Kanäle in der Kategorie erstellen
         for ch_data in cat_data["channels"]:
-            current_overwrites = cat_data["overwrites"].copy()
-
-            # Custom Overwrites für Lounges
-            if ch_data.get("custom_overwrites") == "booster":
-                current_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-                for r in [r_member, r_customer, r_premium_buyer, r_vip]:
-                    if r != r_everyone: current_overwrites[r] = discord.PermissionOverwrite(view_channel=False)
-                if r_booster != r_everyone: current_overwrites[r_booster] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-                    if r != r_everyone: current_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-
-            elif ch_data.get("custom_overwrites") == "vip":
-                current_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-                for r in [r_member, r_customer, r_premium_buyer]:
-                    if r != r_everyone: current_overwrites[r] = discord.PermissionOverwrite(view_channel=False)
-                if r_booster != r_everyone: current_overwrites[r_booster] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                if r_vip != r_everyone: current_overwrites[r_vip] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-                    if r != r_everyone: current_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-
-            elif ch_data.get("custom_overwrites") == "customer":
-                current_overwrites = {r_everyone: discord.PermissionOverwrite(view_channel=False)}
-                if r_member != r_everyone: current_overwrites[r_member] = discord.PermissionOverwrite(view_channel=False)
-                if r_booster != r_everyone: current_overwrites[r_booster] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                if r_customer != r_everyone: current_overwrites[r_customer] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                if r_premium_buyer != r_everyone: current_overwrites[r_premium_buyer] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                if r_vip != r_everyone: current_overwrites[r_vip] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-                for r in [r_support, r_trial_mod, r_mod, r_manager, r_admin, r_co_owner, r_owner]:
-                    if r != r_everyone: current_overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+            # Custom Overwrites für spezielle Lounges
+            ch_overwrites = build_overwrites(ch_data.get("overwrite_mode", cat_data["mode"]))
 
             if ch_data["type"] == "voice":
-                channel = discord.utils.get(category.voice_channels, name=ch_data["name"])
-                if not channel:
+                existing = discord.utils.get(category.voice_channels, name=ch_data["name"])
+                if not existing:
                     try:
                         channel = await guild.create_voice_channel(
                             name=ch_data["name"],
                             category=category,
-                            overwrites=current_overwrites
+                            overwrites=ch_overwrites,
+                            reason="𝗩𝗢𝗜𝗗 Setup"
                         )
-                        await asyncio.sleep(0.15)
+                        channels_by_name[ch_data["name"]] = channel
+                        channels_created += 1
+                        await asyncio.sleep(0.2)
                     except Exception as e:
-                        logger.error(f"Fehler bei Voice-Kanal {ch_data['name']}: {e}")
-                        continue
+                        logger.error(f"Voice-Kanal Fehler {ch_data['name']}: {e}")
+                else:
+                    channels_by_name[ch_data["name"]] = existing
             else:
-                channel = discord.utils.get(category.text_channels, name=ch_data["name"])
-                if not channel:
+                existing = discord.utils.get(category.text_channels, name=ch_data["name"])
+                if not existing:
                     try:
                         channel = await guild.create_text_channel(
                             name=ch_data["name"],
                             category=category,
-                            overwrites=current_overwrites,
-                            topic=ch_data["description"]
+                            overwrites=ch_overwrites,
+                            topic=ch_data.get("topic", ""),
+                            reason="𝗩𝗢𝗜𝗗 Setup"
                         )
-                        await asyncio.sleep(0.15)
+                        channels_by_name[ch_data["name"]] = channel
+                        channels_created += 1
+                        await asyncio.sleep(0.2)
                     except Exception as e:
-                        logger.error(f"Fehler bei Text-Kanal {ch_data['name']}: {e}")
-                        continue
-            channels_by_name[ch_data["name"]] = channel
+                        logger.error(f"Text-Kanal Fehler {ch_data['name']}: {e}")
+                else:
+                    channels_by_name[ch_data["name"]] = existing
 
     status_embed.description = (
-        f"> 👑 **Schritt 1/4:** ✅ Rollen erstellt ({roles_created_count} neu, {roles_skipped_count} übersprungen)\n"
-        f"> 📁 **Schritt 2/4:** ✅ Kategorien & Kanäle erstellt\n"
+        f"> 👑 **Schritt 1/4:** ✅ {roles_created} Rollen erstellt, {roles_skipped} übersprungen\n"
+        f"> 📁 **Schritt 2/4:** ✅ {channels_created} Kanäle erstellt\n"
         f"> 🔒 **Schritt 3/4:** ✅ Berechtigungen gesetzt\n\n"
-        f"> 📝 **Schritt 4/4:** Sende Embed-Nachrichten in die Kanäle..."
+        f"> 📝 **Schritt 4/4:** Sende Embed-Nachrichten..."
     )
     await status_msg.edit(embed=status_embed)
 
-    # ============================
-    # SCHRITT 5: EMBED-NACHRICHTEN SENDEN (1:1 Original)
-    # ============================
+    # ═══════════════════════════════════════
+    # SCHRITT 5: EMBED-NACHRICHTEN (1:1 ORIGINAL)
+    # ═══════════════════════════════════════
     c_ticket_mention = channels_by_name["🎟️│create-ticket"].mention if "🎟️│create-ticket" in channels_by_name else "#create-ticket"
     c_ff_mention = channels_by_name["⚙️│fastflags"].mention if "⚙️│fastflags" in channels_by_name else "#fastflags"
 
@@ -2168,7 +2199,7 @@ async def setup_command(ctx):
                         "> • *Exklusive Bundles (50+ Vorlagen):* ab 500 Robux / 5,00€\n\n"
                         "**⚙️ FastFlags (FPS-Boost):**\n"
                         f"> • *Standard-Configs:* Gratis (siehe {c_ff_mention})\n"
-                        f"> • *Premium Ultra Configs:* 150 Robux / 1,50€\n\n"
+                        "> • *Premium Ultra Configs:* 150 Robux / 1,50€\n\n"
                         "**🖥️ Discord Templates:**\n"
                         "> • *Fertiges Shop-Layout:* 400 Robux / 4,00€",
             color=0xffd700,
@@ -2256,20 +2287,20 @@ async def setup_command(ctx):
         )
         await c_vouches.send(embed=embed_vouch_placeholder)
 
-    # Statistiken sofort updaten
+    # Stats updaten
     await update_stats_channels(guild)
 
-    # ============================
+    # ═══════════════════════════════════════
     # FERTIG!
-    # ============================
+    # ═══════════════════════════════════════
     status_embed.title = "🎉 Server-Setup erfolgreich abgeschlossen! 🎉"
     status_embed.description = (
-        f"> 👑 **Rollen:** {roles_created_count} erstellt, {roles_skipped_count} übersprungen\n"
-        f"> 📁 **Kategorien & Kanäle:** Alle Kanäle erfolgreich eingerichtet\n"
-        f"> 🔒 **Rechte:** Hochsicheres Rechtesystem für alle Rollen aktiv\n"
+        f"> 👑 **Rollen:** {roles_created} erstellt, {roles_skipped} übersprungen\n"
+        f"> 📁 **Kanäle:** {channels_created} erstellt\n"
+        f"> 🔒 **Rechte:** Hochsicheres Rechtesystem aktiv\n"
         f"> 📝 **Embeds:** Alle Infos, Regeln, Tickets & Verifikation gesendet\n"
-        f"> 🎟️ **Tickets:** Interaktive Multi-Tickets mit Claim-Funktion einsatzbereit!\n\n"
-        f"Dein Server ist jetzt komplett fertig eingerichtet! 🚀"
+        f"> 🎟️ **Tickets:** Interaktive Multi-Tickets einsatzbereit!\n\n"
+        f"Dein Server ist jetzt komplett fertig! 🚀"
     )
     status_embed.color = 0x39ff14
     await status_msg.edit(embed=status_embed)
