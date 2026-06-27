@@ -1761,23 +1761,46 @@ async def apply_server_permissions(guild:discord.Guild):
             print(f"[PERM channel] {getattr(channel, 'name', channel)}: {e}")
 
 async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status_message, mode:str="add"):
-    created = {"roles":0,"channels":0,"categories":0}
-    deleted = {"roles":0,"channels":0,"categories":0}
+    created = {"roles": 0, "channels": 0, "categories": 0}
+    deleted = {"roles": 0, "channels": 0, "categories": 0}
+    role_failures = []
+    channel_failures = []
+
     if mode == "reset":
         deleted = await wipe_managed_server(guild, status_message, keep_channel_id=status_message.channel.id)
-    await status_message.edit(content="🚀 **1/7 Rollen erstellen / prüfen …**")
-    existing_roles = {r.name:r for r in guild.roles}
-    for name,rgb,hoist,mentionable in reversed(ROLE_DEFS):
+
+    await edit_status_safe(status_message, "🚀 **1/7 Rollen erstellen / prüfen …**")
+    existing_roles = {r.name: r for r in guild.roles}
+    total_roles = len(ROLE_DEFS)
+
+    for idx, (name, rgb, hoist, mentionable) in enumerate(reversed(ROLE_DEFS), start=1):
+        if idx == 1 or idx % 5 == 0 or idx == total_roles:
+            await edit_status_safe(
+                status_message,
+                f"🚀 **1/7 Rollen erstellen / prüfen …**\nFortschritt: **{idx}/{total_roles}**\nAktuell: **{name}**"
+            )
         if name in existing_roles:
             role = existing_roles[name]
         else:
             try:
-                role = await guild.create_role(name=name, colour=discord.Colour.from_rgb(*rgb), hoist=hoist, mentionable=mentionable, reason="Void_Shop v5 Setup")
+                role = await asyncio.wait_for(
+                    guild.create_role(
+                        name=name,
+                        colour=discord.Colour.from_rgb(*rgb),
+                        hoist=hoist,
+                        mentionable=mentionable,
+                        reason="Void_Shop v5 Setup"
+                    ),
+                    timeout=20
+                )
+                existing_roles[name] = role
                 created["roles"] += 1
-                await asyncio.sleep(0.35)
+                await asyncio.sleep(0.08)
             except Exception as e:
+                role_failures.append(f"{name}: {e}")
                 print(f"[ROLE] {name}: {e}")
                 continue
+
         lname = name.lower()
         if "unverifiziert" in lname: RUNTIME["role_unverified"] = role.id
         if name == "✅ Verifiziert": RUNTIME["role_verified"] = role.id
@@ -1792,7 +1815,8 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
         if name == "⚡ Admin": RUNTIME["role_admin"] = role.id
         if name == "👑 Owner": RUNTIME["role_owner"] = role.id
 
-    await status_message.edit(content=f"🚀 **2/7 Kanäle erstellen / prüfen …** Rollen neu: {created['roles']}")
+    await edit_status_safe(status_message, f"🚀 **2/7 Kanäle erstellen / prüfen …** Rollen neu: {created['roles']} | Rollen-Fehler: {len(role_failures)}")
+
     async def get_cat(name):
         c = discord.utils.get(guild.categories, name=name)
         if c:
@@ -1800,9 +1824,10 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
         try:
             c = await guild.create_category(name, reason="Void_Shop v5")
             created["categories"] += 1
-            await asyncio.sleep(0.45)
+            await asyncio.sleep(0.12)
             return c
         except Exception as e:
+            channel_failures.append(f"Kategorie {name}: {e}")
             print(f"[CATEGORY] {name}: {e}")
             return None
 
@@ -1817,8 +1842,9 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
                     else:
                         ch = await guild.create_text_channel(ch_name, category=cat, topic=topic[:1024] if topic else None, reason="Void_Shop v5")
                     created["channels"] += 1
-                    await asyncio.sleep(0.35)
+                    await asyncio.sleep(0.08)
                 except Exception as e:
+                    channel_failures.append(f"{ch_name}: {e}")
                     print(f"[CH] {ch_name} {e}")
                     continue
             n = ch_name.lower()
@@ -1844,7 +1870,7 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
             if "allgemein" in n and not RUNTIME.get("general"): RUNTIME["general"] = ch.id
             if "media" in n: RUNTIME["media"] = ch.id
 
-    await status_message.edit(content=f"🚀 **3/7 LogSystem – {len(LOG_CHANNEL_DEFS)} Spezial-Kanäle …**")
+    await edit_status_safe(status_message, f"🚀 **3/7 LogSystem – {len(LOG_CHANNEL_DEFS)} Spezial-Kanäle …**")
     log_cat = await get_cat("📊 LOGS")
     for ch_name, key in LOG_CHANNEL_DEFS:
         ch = discord.utils.get(guild.text_channels, name=ch_name)
@@ -1856,21 +1882,22 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
                         overwrites[role] = discord.PermissionOverwrite(view_channel=True, read_message_history=True)
                 ch = await guild.create_text_channel(ch_name, category=log_cat, overwrites=overwrites, reason="Void_Shop Logs")
                 created["channels"] += 1
-                await asyncio.sleep(0.35)
+                await asyncio.sleep(0.08)
             except Exception as e:
+                channel_failures.append(f"{ch_name}: {e}")
                 print(f"[LOG] {e}")
                 continue
         RUNTIME[f"log_{key}"] = ch.id
         if key == "ticker":
             RUNTIME["ticker"] = ch.id
 
-    await status_message.edit(content="🚀 **4/7 Stats-Kanäle …**")
+    await edit_status_safe(status_message, "🚀 **4/7 Stats-Kanäle …**")
     stats_cat = await get_cat("📊 STATS")
     stats_defs = [
-        ("👥・Mitglieder: 0","stat_members"),
-        ("🚀・Booster: 0","stat_boosters"),
-        ("🛒・Kunden: 0","stat_customers"),
-        ("🎫・Offene Tickets: 0","stat_tickets"),
+        ("👥・Mitglieder: 0", "stat_members"),
+        ("🚀・Booster: 0", "stat_boosters"),
+        ("🛒・Kunden: 0", "stat_customers"),
+        ("🎫・Offene Tickets: 0", "stat_tickets"),
     ]
     for name, rkey in stats_defs:
         found = None
@@ -1885,19 +1912,22 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
                 overwrites = {guild.default_role: discord.PermissionOverwrite(connect=False, view_channel=True)}
                 ch = await guild.create_voice_channel(name, category=stats_cat, overwrites=overwrites, reason="Void_Shop Stats")
                 created["channels"] += 1
-                await asyncio.sleep(0.35)
+                await asyncio.sleep(0.08)
             except Exception as e:
+                channel_failures.append(f"{name}: {e}")
                 print(f"[STATS] {e}")
                 continue
         RUNTIME[rkey] = ch.id
 
-    await status_message.edit(content="🚀 **5/7 Berechtigungen & Sichtbarkeit setzen …**")
+    await edit_status_safe(status_message, "🚀 **5/7 Berechtigungen & Sichtbarkeit setzen …**")
     try:
         await apply_server_permissions(guild)
     except Exception as e:
+        channel_failures.append(f"Permissions: {e}")
         print(f"[PERMISSIONS] {e}")
 
-    await status_message.edit(content="🚀 **6/7 Panels posten / aktualisieren …**")
+    await edit_status_safe(status_message, "🚀 **6/7 Panels posten / aktualisieren …**")
+
     async def post_panel(channel_id, embed, view=None):
         if not channel_id:
             return
@@ -1917,8 +1947,9 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
             pass
         try:
             await ch.send(embed=embed, view=view)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.15)
         except Exception as e:
+            channel_failures.append(f"Panel {embed.title}: {e}")
             print(f"[PANEL] {e}")
 
     if C("welcome"):
@@ -2099,7 +2130,7 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
             pass
         await post_panel(C("ticket_create"), emb, TicketPanelView())
 
-    await status_message.edit(content="🚀 **7/7 Speichern, Invite-Cache & Stats initialisieren …**")
+    await edit_status_safe(status_message, "🚀 **7/7 Speichern, Invite-Cache & Stats initialisieren …**")
     save_runtime()
     try:
         await refresh_invite_cache(guild)
@@ -2117,13 +2148,15 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
             f"**Neu erstellt:**\n"
             f"• Rollen: **{created['roles']}**\n"
             f"• Kanäle: **{created['channels']}**\n"
-            f"• Kategorien: **{created['categories']}**\n\n"
+            f"• Kategorien: **{created['categories']}**\n"
+            f"• Rollen-Fehler: **{len(role_failures)}**\n"
+            f"• Kanal-Fehler: **{len(channel_failures)}**\n\n"
             f"**Beim Reset entfernt:**\n"
             f"• Rollen: **{deleted['roles']}**\n"
             f"• Kanäle: **{deleted['channels']}**\n"
             f"• Kategorien: **{deleted['categories']}**\n\n"
             "**Aktiv:**\n"
-            "🛍️ Auto-Delivery • 🔐 Bio-Code-Auth • 🚨 AntiScam\n"
+            "🛍️ Auto-Delivery • 🔐 Direct Roblox Verify • 🚨 AntiScam\n"
             "📈 Live-Käufe Ticker • 🪙 Void-Coins + Invite-Rewards\n"
             "🎫 Ticket-Claim + Supporter-Leaderboard\n"
             f"📜 {len(LOG_CHANNEL_DEFS)} Log-Kanäle • 📊 Live Stats\n"
@@ -2137,10 +2170,11 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
     emb_done.set_footer(text="Void_Shop v5.0 COSMOS • RealVexo696")
     target_channel = guild.system_channel or guild.get_channel(C("bot_commands")) or status_message.channel
     await target_channel.send(embed=emb_done)
+
     try:
         log_emb = make_embed(
             "👑 Server Setup abgeschlossen",
-            f"Admin: {actor.mention}\nModus: **{mode}**\nRollen neu: {created['roles']}\nKanäle neu: {created['channels']}\nKategorien neu: {created['categories']}",
+            f"Admin: {actor.mention}\nModus: **{mode}**\nRollen neu: {created['roles']}\nKanäle neu: {created['channels']}\nKategorien neu: {created['categories']}\nRollen-Fehler: {len(role_failures)}\nKanal-Fehler: {len(channel_failures)}",
             0x2ecc71,
             actor
         )
@@ -2148,6 +2182,28 @@ async def perform_server_setup(guild:discord.Guild, actor:discord.Member, status
         await send_log(bot, "bot", log_emb, discord_id=actor.id)
     except Exception:
         pass
+
+    if role_failures or channel_failures:
+        detail_lines = []
+        if role_failures:
+            detail_lines.append("**Rollen-Fehler:**")
+            detail_lines.extend([f"• {x}" for x in role_failures[:10]])
+        if channel_failures:
+            if detail_lines:
+                detail_lines.append("")
+            detail_lines.append("**Kanal-/Panel-Fehler:**")
+            detail_lines.extend([f"• {x}" for x in channel_failures[:10]])
+        try:
+            await target_channel.send(
+                embed=discord.Embed(
+                    title="⚠️ Setup Hinweise",
+                    description="\n".join(detail_lines)[:4000] or "Es gab kleinere Fehler beim Setup.",
+                    color=0xf39c12,
+                )
+            )
+        except Exception:
+            pass
+
     try:
         if mode == "reset" and status_message.channel.id != target_channel.id:
             await status_message.channel.delete(reason="Void_Shop Reset – alte Start-Channel-Struktur entfernt")
@@ -2176,6 +2232,23 @@ def missing_setup_permissions(guild:discord.Guild):
     }
     return [name for name, ok in required.items() if not ok]
 
+def role_hierarchy_warning(guild:discord.Guild):
+    me = guild.me
+    if not me:
+        return "Bot ist nicht sichtbar auf dem Server."
+    if me.top_role == guild.default_role:
+        return "Die Bot-Rolle steht zu niedrig. Ziehe die Bot-Rolle in den Servereinstellungen weit nach oben."
+    return ""
+
+async def edit_status_safe(message, content:str):
+    try:
+        await message.edit(content=content, embed=None, view=getattr(message, 'view', None))
+    except Exception:
+        try:
+            await message.edit(content=content)
+        except Exception:
+            pass
+
 async def run_start_setup_safe(guild:discord.Guild, actor:discord.Member, status_message, mode:str):
     lock_key = guild.id
     if lock_key in SETUP_LOCKS:
@@ -2187,8 +2260,15 @@ async def run_start_setup_safe(guild:discord.Guild, actor:discord.Member, status
     SETUP_LOCKS.add(lock_key)
     try:
         missing = missing_setup_permissions(guild)
-        if missing:
-            txt = "❌ Dem Bot fehlen wichtige Rechte für `!start`:\n- " + "\n- ".join(missing) + "\n\nBitte gib dem Bot Administrator oder mindestens diese Rechte und starte erneut."
+        hierarchy_hint = role_hierarchy_warning(guild)
+        if missing or hierarchy_hint:
+            parts = []
+            if missing:
+                parts.append("❌ Dem Bot fehlen wichtige Rechte für `!start`:\n- " + "\n- ".join(missing))
+            if hierarchy_hint:
+                parts.append(f"⚠️ Rollen-Hinweis:\n{hierarchy_hint}")
+            parts.append("Bitte gib dem Bot Administrator oder mindestens diese Rechte und stelle seine Rolle weit genug nach oben. Danach `!start` erneut ausführen.")
+            txt = "\n\n".join(parts)
             try:
                 await status_message.edit(content=txt, embed=None, view=None)
             except Exception:
