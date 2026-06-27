@@ -33,8 +33,9 @@ logger = logging.getLogger('void_shop_bot')
 # ==============================================================================
 #                                KONFIGURATION
 # ==============================================================================
-# Trage hier direkt deinen Discord Bot-Token ein!
-TOKEN = "MTUyMDE3MDg0MTQ2NjQ3MDUyMQ.GbIcAF.OBOLoyO8IKC3sbfr1oVuWEMwAw4PphQXy4RCWQ"  
+# Liest den Bot-Token aus den Railway Secrets (DISCORD_TOKEN, TOKEN oder BOT_TOKEN).
+# Alternativ kannst du den Token auch als String unten zwischen den Anführungszeichen eintragen.
+TOKEN = os.environ.get("DISCORD_TOKEN") or os.environ.get("TOKEN") or os.environ.get("BOT_TOKEN") or ""
 
 # Der Prefix für deine Befehle (Standard ist !)
 PREFIX = "!"
@@ -2051,7 +2052,9 @@ async def on_command_error(ctx, error):
 
 if __name__ == "__main__":
     if not TOKEN or TOKEN == "DEIN_BOT_TOKEN_HIER":
-        logger.error("FEHLER: Bitte gib einen gültigen Discord Bot-Token direkt in der 'bot.py' Datei (Zeile 37) an!")
+        logger.error("FEHLER: Kein gültiger Discord Bot-Token gefunden!\n"
+                     "-> Bitte hinterlege deinen Token in Railway unter 'Variables' (Secrets) als 'DISCORD_TOKEN' (oder 'TOKEN').\n"
+                     "-> Alternativ kannst du ihn in der 'bot.py' (Zeile 37) eintragen.")
     else:
         # Flask Webserver für 24/7 online halten auf Railway starten
         keep_alive()
@@ -2059,6 +2062,6 @@ if __name__ == "__main__":
         try:
             bot.run(TOKEN)
         except discord.errors.LoginFailure:
-            logger.error("FEHLER: Der angegebene Bot-Token ist ungültig! Bitte überprüfe den Token in deiner 'bot.py' Datei (Zeile 37).")
+            logger.error("FEHLER: Der angegebene Bot-Token ist ungültig! Bitte überprüfe dein 'DISCORD_TOKEN' Secret in Railway.")
         except Exception as e:
             logger.error(f"Fehler beim Starten des Bots: {e}")
