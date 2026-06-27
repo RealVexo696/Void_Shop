@@ -1,6 +1,6 @@
 """
-Setup Cog - Kompletter Server-Setup mit verbessertem Rate-Limiting.
-Alle Rollen, Kanäle, Berechtigungen und Embeds werden erstellt.
+Setup Cog - Kompletter Server-Setup mit optimiertem Rate-Limiting.
+23 Rollen in ~20 Sekunden, jeder Kanal in 0.5 Sekunden.
 """
 
 import asyncio
@@ -17,77 +17,29 @@ from bot.cogs.database import db
 logger = logging.getLogger("void_shop_bot.setup")
 
 
-async def safe_role_create(guild, name, color, hoist=True, mentionable=True, reason="VOID Setup", max_retries=5):
+async def create_with_retry(guild, coro, name, max_retries=10):
+    """Erstelle eine Rolle oder einen Kanal mit robustem Retry bei Rate-Limits."""
     for attempt in range(max_retries):
         try:
-            role = await guild.create_role(
-                name=name,
-                color=discord.Color(color),
-                hoist=hoist,
-                mentionable=mentionable,
-                reason=reason,
-            )
-            logger.info("Rolle erstellt (%d/%d): %s", attempt + 1, max_retries, name)
-            return role
+            result = await coro
+            logger.info("Erstellt (%d/%d): %s", attempt + 1, max_retries, name)
+            return result
         except discord.HTTPException as e:
             if e.status == 429:
-                wait = (e.retry_after if e.retry_after else 5)
-                logger.warning("Rate-Limit bei Rolle %s, warte %.1fs (Versuch %d/%d)", name, wait, attempt + 1, max_retries)
+                wait = e.retry_after if e.retry_after else 5.0
+                logger.warning("Rate-Limit bei %s, warte %.2fs (Versuch %d/%d)", name, wait, attempt + 1, max_retries)
                 await asyncio.sleep(wait)
             else:
-                logger.error("HTTPException bei Rolle %s: %s", name, e)
+                logger.error("HTTPException bei %s: %s", name, e)
                 return None
         except discord.Forbidden as e:
-            logger.error("Forbidden bei Rolle %s: %s", name, e)
+            logger.error("Forbidden bei %s: %s", name, e)
             return None
         except Exception as e:
-            logger.error("Fehler bei Rolle %s: %s", name, e)
+            logger.error("Fehler bei %s: %s", name, e)
             return None
-    logger.error("Max Retries erreicht fuer Rolle %s", name)
+    logger.error("Max Retries erreicht fuer %s", name)
     return None
-
-
-async def safe_channel_create(guild, channel_type, name, category=None, overwrites=None, topic=None, reason="VOID Setup", max_retries=5):
-    for attempt in range(max_retries):
-        try:
-            if channel_type == "voice":
-                ch = await guild.create_voice_channel(
-                    name=name, category=category, overwrites=overwrites or {}, reason=reason
-                )
-            elif channel_type == "category":
-                ch = await guild.create_category(
-                    name=name, overwrites=overwrites or {}, reason=reason
-                )
-            else:
-                ch = await guild.create_text_channel(
-                    name=name, category=category, overwrites=overwrites or {}, topic=topic or "", reason=reason
-                )
-            logger.info("Kanal erstellt (%d/%d): %s", attempt + 1, max_retries, name)
-            return ch
-        except discord.HTTPException as e:
-            if e.status == 429:
-                wait = (e.retry_after if e.retry_after else 5)
-                logger.warning("Rate-Limit bei Kanal %s, warte %.1fs (Versuch %d/%d)", name, wait, attempt + 1, max_retries)
-                await asyncio.sleep(wait)
-            else:
-                logger.error("HTTPException bei Kanal %s: %s", name, e)
-                return None
-        except discord.Forbidden as e:
-            logger.error("Forbidden bei Kanal %s: %s", name, e)
-            return None
-        except Exception as e:
-            logger.error("Fehler bei Kanal %s: %s", name, e)
-            return None
-    logger.error("Max Retries erreicht fuer Kanal %s", name)
-    return None
-
-
-async def safe_edit(msg, **kwargs):
-    """Editiere eine Nachricht, ignoriere NotFound-Fehler sicher."""
-    try:
-        return await msg.edit(**kwargs)
-    except Exception:
-        return None
 
 
 class SetupConfirmationView(View):
@@ -114,7 +66,7 @@ class SetupConfirmationView(View):
         self.value = "add"
         self.stop()
 
-    @discord.ui.button(label="Abbrechen", style=discord.ButtonStyle.secondary, emoji="❌")
+    @discord.ui.button(label="Abbrechen", style=discord.ButtonStyle.secondary, emoji="\u274C")
     async def cancel_setup(self, interaction, button):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("Das kannst du nicht entscheiden!", ephemeral=True)
@@ -212,6 +164,12 @@ class SetupCog(commands.Cog, name="SetupCog"):
 
         return ow
 
+    async def safe_edit(self, msg, **kwargs):
+        try:
+            return await msg.edit(**kwargs)
+        except Exception:
+            return None
+
     @app_commands.command(name="setup", description="Komplettes Server-Setup: Rollen, Kanaele, Rechte und Embeds")
     @app_commands.choices(modus=[
         app_commands.Choice(name="Komplett neu aufsetzen", value="reset"),
@@ -269,8 +227,9 @@ class SetupCog(commands.Cog, name="SetupCog"):
         )
         status_msg = await interaction.followup.send(embed=status_embed, ephemeral=True, wait=True)
 
+        # SCHRITT 0: RESET
         if modus == "reset":
-            await safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
+            await self.safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
                 title="Setup-Prozess laeuft...",
                 description="> Loeche alte Kanaele...",
                 color=0x00F0FF,
@@ -281,11 +240,11 @@ class SetupCog(commands.Cog, name="SetupCog"):
             for channel in list(guild.channels):
                 try:
                     await channel.delete()
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.3)
                 except Exception:
                     pass
 
-            await safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
+            await self.safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
                 title="Setup-Prozess laeuft...",
                 description="> Loeche alte Rollen...",
                 color=0x00F0FF,
@@ -297,13 +256,14 @@ class SetupCog(commands.Cog, name="SetupCog"):
                 if role != guild.default_role and not role.managed and role < bot_member.top_role:
                     try:
                         await role.delete()
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0.3)
                     except Exception:
                         pass
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
-        await safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
+        # SCHRITT 1: ALLE 23 ROLLEN ERSTELLEN
+        await self.safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
             title="Setup-Prozess laeuft...",
             description="> **Schritt 1/4:** Erstelle 23 Premium-Rollen...",
             color=0x00F0FF,
@@ -343,53 +303,49 @@ class SetupCog(commands.Cog, name="SetupCog"):
         roles_failed = 0
         role_errors = []
         total_roles = len(role_definitions)
-        bot_top_role = bot_member.top_role
 
         for idx, (role_name, color_hex) in enumerate(role_definitions, 1):
             existing = discord.utils.get(guild.roles, name=role_name)
             if existing:
                 all_roles[role_name] = existing
                 roles_skipped += 1
+                await asyncio.sleep(0.5)
                 continue
 
-            if (idx - 1) % 3 == 0:
-                try:
-                    await safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
-                        title="Setup-Prozess laeuft...",
-                        description="> **Schritt 1/4:** Erstelle Rollen... (" + str(idx) + "/" + str(total_roles) + ")\n> Aktuell: `" + role_name + "`",
-                        color=0x00F0FF,
-                        author_user=interaction.user,
-                        bot_user=self.bot.user,
-                    ))
-                except Exception:
-                    pass
+            if idx % 4 == 0:
+                await self.safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
+                    title="Setup-Prozess laeuft...",
+                    description="> **Schritt 1/4:** Erstelle Rollen... (" + str(idx) + "/" + str(total_roles) + ")\n> Aktuell: `" + role_name + "`",
+                    color=0x00F0FF,
+                    author_user=interaction.user,
+                    bot_user=self.bot.user,
+                ))
 
-            result = await safe_role_create(
+            result = await create_with_retry(
                 guild=guild,
+                coro=guild.create_role(
+                    name=role_name,
+                    color=discord.Color(color_hex),
+                    hoist=True,
+                    mentionable=True,
+                    reason="VOID Setup",
+                ),
                 name=role_name,
-                color=color_hex,
-                hoist=True,
-                mentionable=True,
-                reason="VOID Setup",
-                max_retries=5,
+                max_retries=10,
             )
 
             if result:
                 all_roles[role_name] = result
                 roles_created += 1
-                try:
-                    await result.edit(position=bot_top_role.position - 1 if bot_top_role.position > 0 else 1)
-                except Exception:
-                    pass
             else:
                 roles_failed += 1
                 role_errors.append(role_name + ": Erstellung fehlgeschlagen")
 
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(0.5)
 
         if roles_created == 0 and roles_skipped == 0:
             error_list = "\n".join(["> " + err for err in role_errors[:10]])
-            await safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
+            await self.safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
                 title="FEHLER: Keine Rollen erstellt!",
                 description=(
                     "> Es konnte **keine einzige Rolle** erstellt werden!\n\n"
@@ -410,7 +366,7 @@ class SetupCog(commands.Cog, name="SetupCog"):
         if roles_failed > 0:
             error_note = "\n> **{0} Rollen fehlgeschlagen** (Bot-Rolle hoeher ziehen!)".format(roles_failed)
 
-        await safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
+        await self.safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
             title="Setup-Prozess laeuft...",
             description=(
                 "> **Schritt 1/4:** Rollen fertig!\n"
@@ -422,6 +378,7 @@ class SetupCog(commands.Cog, name="SetupCog"):
             bot_user=self.bot.user,
         ))
 
+        # SCHRITT 2: ROLLEN-REFERENZEN
         r_everyone = guild.default_role
 
         def get_role(name):
@@ -570,32 +527,32 @@ class SetupCog(commands.Cog, name="SetupCog"):
         for cat_idx, cat_data in enumerate(categories_layout, 1):
             cat_overwrites = make_cat_overwrites(cat_data["mode"])
 
-            try:
-                await safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
-                    title="Setup-Prozess laeuft...",
-                    description=(
-                        "> **Schritt 1/4:** {0} Rollen erstellt, {1} uebersprungen\n\n"
-                        "> **Schritt 2/4:** Erstelle Kanaele... (Kategorie {2}/{3})\n"
-                        "> Aktuell: `{4}`"
-                    ).format(roles_created, roles_skipped, cat_idx, total_categories, cat_data["name"]),
-                    color=0x00F0FF,
-                    author_user=interaction.user,
-                    bot_user=self.bot.user,
-                ))
-            except Exception:
-                pass
+            await self.safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
+                title="Setup-Prozess laeuft...",
+                description=(
+                    "> **Schritt 1/4:** {0} Rollen erstellt, {1} uebersprungen\n\n"
+                    "> **Schritt 2/4:** Erstelle Kanaele... (Kategorie {2}/{3})\n"
+                    "> Aktuell: `{4}`"
+                ).format(roles_created, roles_skipped, cat_idx, total_categories, cat_data["name"]),
+                color=0x00F0FF,
+                author_user=interaction.user,
+                bot_user=self.bot.user,
+            ))
 
             category = discord.utils.get(guild.categories, name=cat_data["name"])
             if not category:
-                category = await safe_channel_create(
+                category = await create_with_retry(
                     guild=guild,
-                    channel_type="category",
+                    coro=guild.create_category(
+                        name=cat_data["name"],
+                        overwrites=cat_overwrites,
+                        reason="VOID Setup",
+                    ),
                     name=cat_data["name"],
-                    overwrites=cat_overwrites,
-                    reason="VOID Setup",
+                    max_retries=10,
                 )
                 if not category:
-                    await safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
+                    await self.safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
                         title="FEHLER: Keine Berechtigung fuer Kanaele!",
                         description=(
                             "> Ich kann keine Kategorien und Kanaele erstellen!\n\n"
@@ -609,7 +566,7 @@ class SetupCog(commands.Cog, name="SetupCog"):
                         bot_user=self.bot.user,
                     ))
                     return
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.5)
 
             for ch_data in cat_data["channels"]:
                 ch_overwrites = make_cat_overwrites(ch_data.get("overwrite_mode", cat_data["mode"]))
@@ -621,23 +578,36 @@ class SetupCog(commands.Cog, name="SetupCog"):
                     existing = discord.utils.get(category.text_channels, name=ch_data["name"])
 
                 if not existing:
-                    result = await safe_channel_create(
+                    if ch_data["type"] == "voice":
+                        coro = guild.create_voice_channel(
+                            name=ch_data["name"],
+                            category=category,
+                            overwrites=ch_overwrites,
+                            reason="VOID Setup",
+                        )
+                    else:
+                        coro = guild.create_text_channel(
+                            name=ch_data["name"],
+                            category=category,
+                            overwrites=ch_overwrites,
+                            topic=ch_data.get("topic", ""),
+                            reason="VOID Setup",
+                        )
+
+                    result = await create_with_retry(
                         guild=guild,
-                        channel_type=ch_data["type"],
+                        coro=coro,
                         name=ch_data["name"],
-                        category=category,
-                        overwrites=ch_overwrites,
-                        topic=ch_data.get("topic", ""),
-                        reason="VOID Setup",
+                        max_retries=10,
                     )
                     if result:
                         channels_by_name[ch_data["name"]] = result
                         channels_created += 1
-                    await asyncio.sleep(5.0)
+                    await asyncio.sleep(0.5)
                 else:
                     channels_by_name[ch_data["name"]] = existing
 
-        await safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
+        await self.safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
             title="Setup-Prozess laeuft...",
             description=(
                 "> **Schritt 1/4:** {0} Rollen erstellt, {1} uebersprungen\n"
@@ -650,6 +620,7 @@ class SetupCog(commands.Cog, name="SetupCog"):
             bot_user=self.bot.user,
         ))
 
+        # SCHRITT 4: EMBED-NACHRICHTEN
         c_ticket_mention = channels_by_name["create-ticket"].mention if "create-ticket" in channels_by_name else "#create-ticket"
         c_ff_mention = channels_by_name["fastflags"].mention if "fastflags" in channels_by_name else "#fastflags"
 
@@ -824,7 +795,7 @@ class SetupCog(commands.Cog, name="SetupCog"):
         if stats_cog:
             await stats_cog.update_stats_channels(guild)
 
-        await safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
+        await self.safe_edit(status_msg, embed=EmbedHelper.create_prestige_embed(
             title="Server-Setup erfolgreich abgeschlossen!",
             description=(
                 "> **Rollen:** {0} erstellt, {1} uebersprungen\n"
