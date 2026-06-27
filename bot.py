@@ -3508,12 +3508,328 @@ button{{width:100%;padding:13px;background:#FF2020;color:#fff;border:none;border
         recent = q("SELECT p.*, u.roblox_name FROM purchases p LEFT JOIN users u ON u.discord_id=p.discord_id ORDER BY p.created_at DESC LIMIT 15")
         coin_lb = q("SELECT discord_id, coins, purchases FROM users ORDER BY coins DESC LIMIT 10")
         scams = q("SELECT * FROM antiscam_hits ORDER BY created_at DESC LIMIT 10")
-        # staff
         staff = q("SELECT staff_id, tickets_closed, tickets_claimed, rating_count, CASE WHEN rating_count>0 THEN CAST(rating_sum AS FLOAT)/rating_count ELSE 0 END as avg FROM staff_stats ORDER BY tickets_closed DESC LIMIT 10")
-        # open tickets
         ot = q("SELECT COUNT(*) c FROM tickets_open WHERE closed=0", one=True); open_tickets = ot["c"] if ot else 0
-        conv = round((data["total_purchases"]/verified*100) if verified else 0,1)
-        html = f"""
-<h2>👑 Management Dashboard <span class=badge>v2.0 ULTIMATE</span> <span class=badge style="background:#133d1a;color:#5feca0">LIVE</span></h2>
-<div class=grid>
+        conv = round((data["total_purchases"] / verified * 100) if verified else 0, 1)
 
+        html = (
+            f"<h2>👑 Management Dashboard <span class=badge>v5 COSMOS</span> <span class=badge style='background:#133d1a;color:#5feca0'>LIVE</span></h2>"
+            f"<div class=grid>"
+            f"<div class=card><h3>Heute Umsatz</h3><div class='big gold'>{data['today_robux']} <span style='font-size:16px'>R$</span></div>{data['today_purchases']} Käufe</div>"
+            f"<div class=card><h3>Monat Umsatz</h3><div class='big red'>{data['month_robux']} R$</div>{data['month_purchases']} Käufe</div>"
+            f"<div class=card><h3>Gesamt</h3><div class=big>{data['total_robux']} R$</div>{data['total_purchases']} Käufe</div>"
+            f"<div class=card><h3>User</h3><div class='big blue'>{users}</div>{verified} verifiziert</div>"
+            f"<div class=card><h3>Void-Coins</h3><div class='big gold'>🪙 {coins_total}</div>im Umlauf</div>"
+            f"<div class=card><h3>Conversion</h3><div class='big green'>{conv}%</div>verified → Kauf</div>"
+            f"<div class=card><h3>Offene Tickets</h3><div class='big' style='color:#f39c12'>{open_tickets}</div>live</div>"
+            f"<div class=card><h3>AntiScam</h3><div class='big green'>🛡️ aktiv</div>24/7 Schutz</div>"
+            f"</div>"
+            f"<div class=grid style='margin-top:16px'>"
+            f"<div class=card><h3>👑 Owner-Zentrale</h3><div style='display:grid;gap:10px'><a class=btn href='/crm'>CRM / Kundenprofile</a><a class=btn href='/staff'>Supporter-Leaderboard</a><a class=btn href='/tickets'>Ticket-Control-Center</a><a class=btn href='/logs'>LogSystem 2.0</a><a class=btn href='/coins'>Void-Coins</a><a class=btn href='/invites'>Invite-Center</a></div></div>"
+            f"<div class=card><h3>🧩 Aktivierte Features</h3><p>✅ Auto-Delivery<br>✅ Direct Roblox Verify<br>✅ AntiScam / Phishing-Schild<br>✅ Live-Käufe Ticker<br>✅ Invite-Rewards & Void-Coins<br>✅ Staff-Tracking & Ratings<br>✅ CRM / Bestellhistorie / Transkripte</p></div>"
+            f"</div>"
+            f"<div class=two style='margin-top:16px'>"
+            f"<div class=card><h3>📈 Top Produkte</h3><table><tr><th>Produkt</th><th>Verkäufe</th><th>Umsatz</th></tr>"
+        )
+        for p, c, r in data["top_products"]:
+            html += f"<tr><td>{p}</td><td>{c}</td><td class=gold>{r} R$</td></tr>"
+        html += "</table></div><div class=card><h3>🪙 Coin Leaderboard</h3><table><tr><th>#</th><th>User</th><th>Coins</th></tr>"
+        for i, row in enumerate(coin_lb, 1):
+            html += f"<tr><td>{i}</td><td>&lt;@{row['discord_id']}&gt;</td><td class=gold>{row['coins']}</td></tr>"
+        html += "</table></div></div>"
+        html += "<div class=card style='margin-top:16px'><h3>👑 Staff Leaderboard – Mitarbeiter des Monats</h3><table><tr><th>#</th><th>Staff</th><th>Closed</th><th>Claimed</th><th>⭐</th></tr>"
+        for i, s in enumerate(staff, 1):
+            html += f"<tr><td>{i}</td><td>&lt;@{s['staff_id']}&gt;</td><td>{s['tickets_closed']}</td><td>{s['tickets_claimed']}</td><td>{round(s['avg'], 1) if s['avg'] else '–'}</td></tr>"
+        if not staff:
+            html += "<tr><td colspan=5 style=color:#666>Noch keine Staff-Daten – werden beim Ticket-Close automatisch getrackt.</td></tr>"
+        html += "</table></div>"
+        html += "<div class=card style='margin-top:16px'><h3>🛍️ Live Käufe – FOMO Ticker</h3><table><tr><th>Zeit</th><th>Käufer</th><th>Produkt</th><th>R$</th></tr>"
+        for r in recent:
+            rn = f" <small>({r['roblox_name']})</small>" if r["roblox_name"] else ""
+            html += f"<tr><td>{r['created_at']}</td><td>&lt;@{r['discord_id']}&gt;{rn}</td><td>{r['product_key']}</td><td class=gold>{r['robux_price']}</td></tr>"
+        html += "</table></div>"
+        html += "<div class=card style='margin-top:16px'><h3>🚨 AntiScam – letzte Hits</h3><table><tr><th>Zeit</th><th>User</th><th>URL</th><th>Grund</th></tr>"
+        for s in scams:
+            html += f"<tr><td>{s['created_at']}</td><td>&lt;@{s['discord_id']}&gt;</td><td style='max-width:340px;overflow:hidden;text-overflow:ellipsis'>{s['url']}</td><td><span class=badge>{s['reason']}</span></td></tr>"
+        if not scams:
+            html += "<tr><td colspan=4 style=color:#666>Keine Scam-Versuche – Schild hält! 🛡️</td></tr>"
+        html += "</table></div>"
+        return page(html)
+    @app.route("/crm")
+    @owner_required
+    def crm_page():
+        sql = (
+            "SELECT u.discord_id, u.roblox_name, u.coins, u.purchases, u.total_spent_robux, "
+            "u.joined_at, u.verified_at, u.last_activity_at, "
+            "(SELECT COUNT(*) FROM tickets_open t WHERE t.user_id=u.discord_id AND t.closed=0) AS open_tickets "
+            "FROM users u ORDER BY u.total_spent_robux DESC, u.purchases DESC, u.coins DESC LIMIT 200"
+        )
+        rows = q(sql)
+        html = "<h2>👑 CRM / Kundenverwaltung</h2><div class=card><table><tr><th>User</th><th>Roblox</th><th>Käufe</th><th>R$</th><th>Coins</th><th>Offene Tickets</th><th>Letzte Aktivität</th><th>Profil</th></tr>"
+        for r in rows:
+            profile_url = f"/crm/{r['discord_id']}"
+            html += (
+                f"<tr><td>&lt;@{r['discord_id']}&gt;</td>"
+                f"<td>{r['roblox_name'] or '–'}</td>"
+                f"<td>{r['purchases']}</td>"
+                f"<td>{r['total_spent_robux']}</td>"
+                f"<td class=gold>{r['coins']}</td>"
+                f"<td>{r['open_tickets']}</td>"
+                f"<td>{r['last_activity_at'] or r['joined_at'] or '–'}</td>"
+                f"<td><a href='{profile_url}'>Öffnen</a></td></tr>"
+            )
+        if not rows:
+            html += "<tr><td colspan=8 style=color:#666>Noch keine Kundendaten vorhanden.</td></tr>"
+        html += "</table></div>"
+        return page(html)
+    @app.route("/crm/<int:discord_id>")
+    @owner_required
+    def crm_detail_page(discord_id:int):
+        user = q("SELECT * FROM users WHERE discord_id=?", (discord_id,), one=True)
+        if not user:
+            return page("<div class=card><h2>Kunde nicht gefunden</h2></div>")
+        orders = q("SELECT product_key, robux_price, order_code, created_at FROM purchases WHERE discord_id=? ORDER BY created_at DESC LIMIT 100", (discord_id,))
+        tickets = q("SELECT channel_id, type, created_at, closed FROM tickets_open WHERE user_id=? ORDER BY created_at DESC LIMIT 50", (discord_id,))
+        notes = q("SELECT * FROM customer_notes WHERE discord_id=? ORDER BY created_at DESC LIMIT 20", (discord_id,))
+        html = f"<h2>🧾 Kundenprofil – &lt;@{discord_id}&gt;</h2><div class=grid>"
+        html += f"<div class=card><h3>Roblox</h3><div class=big>{user['roblox_name'] or '–'}</div></div>"
+        html += f"<div class=card><h3>Käufe</h3><div class=big>{user['purchases']}</div></div>"
+        html += f"<div class=card><h3>Gesamtumsatz</h3><div class='big gold'>{user['total_spent_robux']} R$</div></div>"
+        html += f"<div class=card><h3>Coins</h3><div class='big gold'>{user['coins']}</div></div></div>"
+        html += "<div class=two style='margin-top:16px'><div class=card><h3>Bestellhistorie</h3><table><tr><th>Zeit</th><th>Produkt</th><th>R$</th><th>Order-ID</th></tr>"
+        for o in orders:
+            html += f"<tr><td>{o['created_at']}</td><td>{o['product_key']}</td><td>{o['robux_price']}</td><td>{o['order_code'] or '–'}</td></tr>"
+        if not orders:
+            html += "<tr><td colspan=4 style=color:#666>Keine Bestellungen vorhanden.</td></tr>"
+        html += "</table></div><div class=card><h3>Ticket-Historie</h3><table><tr><th>Zeit</th><th>Typ</th><th>Status</th></tr>"
+        for t in tickets:
+            html += f"<tr><td>{t['created_at']}</td><td>{t['type']}</td><td>{'offen' if not t['closed'] else 'geschlossen'}</td></tr>"
+        if not tickets:
+            html += "<tr><td colspan=3 style=color:#666>Keine Tickets vorhanden.</td></tr>"
+        html += "</table></div></div>"
+        html += "<div class=card style='margin-top:16px'><h3>Kundennotizen</h3><table><tr><th>Zeit</th><th>Staff</th><th>Notiz</th></tr>"
+        for n in notes:
+            html += f"<tr><td>{n['created_at']}</td><td>&lt;@{n['staff_id']}&gt;</td><td>{(n['note'] or '')[:240]}</td></tr>"
+        if not notes:
+            html += "<tr><td colspan=3 style=color:#666>Keine Kundennotizen vorhanden.</td></tr>"
+        html += "</table></div>"
+        return page(html)
+    @app.route("/notes")
+    @owner_required
+    def notes_page():
+        notes = q("SELECT * FROM customer_notes ORDER BY created_at DESC LIMIT 200")
+        tnotes = q("SELECT * FROM ticket_notes ORDER BY created_at DESC LIMIT 200")
+        html = "<h2>🗒️ Notizen-Zentrale</h2><div class=two><div class=card><h3>Kundennotizen</h3><table><tr><th>Zeit</th><th>Kunde</th><th>Staff</th><th>Notiz</th></tr>"
+        for n in notes:
+            html += f"<tr><td>{n['created_at']}</td><td>&lt;@{n['discord_id']}&gt;</td><td>&lt;@{n['staff_id']}&gt;</td><td>{(n['note'] or '')[:180]}</td></tr>"
+        if not notes:
+            html += "<tr><td colspan=4 style=color:#666>Keine Kundennotizen vorhanden.</td></tr>"
+        html += "</table></div><div class=card><h3>Ticket-Notizen</h3><table><tr><th>Zeit</th><th>Channel</th><th>Staff</th><th>Notiz</th></tr>"
+        for n in tnotes:
+            html += f"<tr><td>{n['created_at']}</td><td>#{n['channel_id']}</td><td>&lt;@{n['staff_id']}&gt;</td><td>{(n['note'] or '')[:180]}</td></tr>"
+        if not tnotes:
+            html += "<tr><td colspan=4 style=color:#666>Keine Ticket-Notizen vorhanden.</td></tr>"
+        html += "</table></div></div>"
+        return page(html)
+    @app.route("/public-shop")
+    def public_shop_page():
+        html = "<h2>🛍️ Void Shop – Public Shop Page</h2><div class=grid>"
+        for k, p in PRODUCTS.items():
+            html += f"<div class=card><h3>{p['name']}</h3><div class='big gold'>{p['robux_price']} R$</div><p>Gamepass: {p['gamepass_id']}</p><p>{(p.get('deliver',{}).get('message','') or 'Premium Produkt')[:180]}</p></div>"
+        html += "</div><div class=card style='margin-top:16px'><h3>Bundles</h3><table><tr><th>Name</th><th>Preis</th><th>Inhalt</th></tr>"
+        for _, b in BUNDLES.items():
+            items = ", ".join(product_label(i) for i in b['items'])
+            html += f"<tr><td>{b['name']}</td><td>{b['price']} R$</td><td>{items}</td></tr>"
+        html += "</table></div>"
+        return page(html)
+    @app.route("/products")
+    @owner_required
+    def products_page():
+        import json
+        pretty = json.dumps(PRODUCTS, indent=2, ensure_ascii=False)
+        bundles = json.dumps(BUNDLES, indent=2, ensure_ascii=False)
+        html = f"""<h2>🛍️ Produkt-Manager – Auto-Delivery</h2>
+<div class=card><p>Produkte sind in v2 ULTIMATE direkt im Code <code>PRODUCTS = {{...}}</code>.<br>
+Ändere Gamepass IDs & Download-Links dort.</p>
+<pre style="background:#0f0f18;padding:16px;border-radius:12px;overflow:auto;max-height:420px;font-size:12px">{pretty}</pre>
+<h3 style='margin-top:16px'>Bundles</h3>
+<pre style="background:#0f0f18;padding:16px;border-radius:12px;overflow:auto;max-height:260px;font-size:12px">{bundles}</pre>
+<a href="/" class=btn>← Dashboard</a></div>"""
+        return page(html)
+    @app.route("/coins")
+    @owner_required
+    def coins_page():
+        rows = q("SELECT discord_id, coins, purchases, total_spent_robux, roblox_name FROM users ORDER BY coins DESC LIMIT 120")
+        ledger = q("SELECT * FROM coins_ledger ORDER BY created_at DESC LIMIT 200")
+        html = "<h2>🪙 Void-Coins Economy</h2><div class=two>"
+        html += "<div class=card><h3>Leaderboard</h3><table><tr><th>User</th><th>Coins</th><th>Käufe</th><th>R$</th></tr>"
+        for r in rows:
+            html += f"<tr><td>&lt;@{r['discord_id']}&gt; {r['roblox_name'] or ''}</td><td class=gold>{r['coins']}</td><td>{r['purchases']}</td><td>{r['total_spent_robux']}</td></tr>"
+        html += "</table></div><div class=card><h3>Ledger</h3><table><tr><th>Zeit</th><th>User</th><th>±</th><th>Grund</th></tr>"
+        for l in ledger:
+            col = "green" if l["amount"]>0 else "red"
+            html += f"<tr><td>{l['created_at']}</td><td>&lt;@{l['discord_id']}&gt;</td><td class={col}>{l['amount']:+d}</td><td>{l['reason']}</td></tr>"
+        html += "</table></div></div>"
+        return page(html)
+    @app.route("/logs")
+    @owner_required
+    def logs_page():
+        t = request.args.get("type","")
+        if t:
+            rows = q("SELECT * FROM logs WHERE log_type=? ORDER BY created_at DESC LIMIT 400", (t,))
+        else:
+            rows = q("SELECT * FROM logs ORDER BY created_at DESC LIMIT 400")
+        types = [r["log_type"] for r in q("SELECT DISTINCT log_type FROM logs")]
+        filt = " ".join([f"<a class=badge href=/logs?type={x}>{x}</a>" for x in types]) + " <a class=badge href=/logs>alle</a>"
+        html = f"<h2>📜 LogSystem 2.0 – Kommandozentrale</h2><div class=card style='margin-bottom:12px'>{filt}<br><br><small>{len(LOG_CHANNEL_DEFS)} Kanäle: join · leave · voice · message · invite · shop · verify · antiscam · ticket · coins · mod · system · ticker · bot · owner</small></div>"
+        html += "<div class=card><table><tr><th>Zeit</th><th>Typ</th><th>User</th><th>Channel</th><th>Content</th></tr>"
+        for r in rows:
+            uid = f"&lt;@{r['discord_id']}&gt;" if r["discord_id"] else ""
+            ch = f"#{r['channel_id']}" if r["channel_id"] else ""
+            cont = (r["content"] or "")[:160]
+            html += f"<tr><td>{r['created_at']}</td><td><span class=badge>{r['log_type']}</span></td><td>{uid}</td><td>{ch}</td><td>{cont}</td></tr>"
+        html += "</table></div>"
+        return page(html)
+    @app.route("/coupons")
+    @owner_required
+    def coupons_page():
+        rows = q("SELECT * FROM coupons ORDER BY created_at DESC LIMIT 200")
+        reds = q("SELECT * FROM coupon_redemptions ORDER BY created_at DESC LIMIT 200")
+        html = "<h2>🏷️ Coupon Center</h2><div class=two><div class=card><h3>Coupons</h3><table><tr><th>Code</th><th>Typ</th><th>Wert</th><th>Uses</th><th>Expires</th><th>Status</th></tr>"
+        for r in rows:
+            html += f"<tr><td>{r['code']}</td><td>{r['kind']}</td><td>{r['value']}</td><td>{r['uses']}/{r['max_uses']}</td><td>{r['expires_at'] or '–'}</td><td>{'aktiv' if r['active'] else 'inaktiv'}</td></tr>"
+        if not rows:
+            html += "<tr><td colspan=6 style=color:#666>Noch keine Coupons vorhanden.</td></tr>"
+        html += "</table></div><div class=card><h3>Redemptions</h3><table><tr><th>Zeit</th><th>Code</th><th>User</th></tr>"
+        for r in reds:
+            html += f"<tr><td>{r['created_at']}</td><td>{r['code']}</td><td>&lt;@{r['discord_id']}&gt;</td></tr>"
+        if not reds:
+            html += "<tr><td colspan=3 style=color:#666>Noch keine Redemptions vorhanden.</td></tr>"
+        html += "</table></div></div>"
+        return page(html)
+    @app.route("/invites")
+    @owner_required
+    def invites_page():
+        rows = q("SELECT inviter_id, COUNT(*) as total FROM invites WHERE rewarded=1 GROUP BY inviter_id ORDER BY total DESC LIMIT 200")
+        recent = q("SELECT inviter_id, invited_id, invite_code, joined_at FROM invites ORDER BY joined_at DESC LIMIT 100")
+        html = "<h2>🎁 Invite Center</h2><div class=two><div class=card><h3>Leaderboard</h3><table><tr><th>#</th><th>User</th><th>Invites</th></tr>"
+        for i, r in enumerate(rows, 1):
+            html += f"<tr><td>{i}</td><td>&lt;@{r['inviter_id']}&gt;</td><td>{r['total']}</td></tr>"
+        if not rows:
+            html += "<tr><td colspan=3 style=color:#666>Noch keine Invite-Daten.</td></tr>"
+        html += "</table></div><div class=card><h3>Letzte Invite-Joins</h3><table><tr><th>Zeit</th><th>Inviter</th><th>Neuer User</th><th>Code</th></tr>"
+        for r in recent:
+            html += f"<tr><td>{r['joined_at']}</td><td>&lt;@{r['inviter_id']}&gt;</td><td>&lt;@{r['invited_id']}&gt;</td><td>{r['invite_code'] or '–'}</td></tr>"
+        if not recent:
+            html += "<tr><td colspan=4 style=color:#666>Noch keine Invite-Logs vorhanden.</td></tr>"
+        html += "</table></div></div>"
+        return page(html)
+    @app.route("/tickets")
+    @owner_required
+    def tickets_page():
+        sql = (
+            "SELECT t.channel_id, t.user_id, t.type, t.created_at, t.closed, "
+            "m.claimed_by, m.claimed_at, m.first_staff_response_at, m.closer_id, m.closed_at, "
+            "m.survey_product, m.survey_stars, m.priority, tt.file_path "
+            "FROM tickets_open t "
+            "LEFT JOIN ticket_metrics m ON m.channel_id=t.channel_id "
+            "LEFT JOIN ticket_transcripts tt ON tt.channel_id=t.channel_id "
+            "ORDER BY t.closed ASC, t.created_at DESC LIMIT 200"
+        )
+        rows = q(sql)
+        html = "<h2>🎫 Ticket Control Center</h2><div class=card><table><tr><th>Status</th><th>User</th><th>Typ</th><th>Priorität</th><th>Claimed By</th><th>First Response</th><th>Produkt</th><th>⭐</th><th>Transcript</th><th>Erstellt</th></tr>"
+        for r in rows:
+            status = "🟢 Offen" if not r["closed"] else "⚫ Geschlossen"
+            claimed = f"&lt;@{r['claimed_by']}&gt;" if r["claimed_by"] else "–"
+            first_response = r["first_staff_response_at"] or "–"
+            product = r["survey_product"] or "–"
+            stars = r["survey_stars"] or "–"
+            priority = (r["priority"] or "normal").upper()
+            transcript = r["file_path"] or "–"
+            html += f"<tr><td>{status}</td><td>&lt;@{r['user_id']}&gt;</td><td>{r['type']}</td><td>{priority}</td><td>{claimed}</td><td>{first_response}</td><td>{product}</td><td>{stars}</td><td>{transcript}</td><td>{r['created_at']}</td></tr>"
+        if not rows:
+            html += "<tr><td colspan=10 style=color:#666>Noch keine Ticket-Daten vorhanden.</td></tr>"
+        html += "</table></div>"
+        return page(html)
+    @app.route("/staff")
+    @owner_required
+    def staff_page():
+        staff = q("SELECT staff_id, tickets_claimed, tickets_closed, avg_response_sec, rating_sum, rating_count, CASE WHEN rating_count>0 THEN CAST(rating_sum AS FLOAT)/rating_count ELSE 0 END as avg FROM staff_stats ORDER BY tickets_closed DESC, avg DESC")
+        html = "<h2>👑 Supporter-Leaderboard – Mitarbeiter des Monats</h2><div class=card>"
+        html += "<table><tr><th>#</th><th>Staff</th><th>Tickets Closed</th><th>Claimed</th><th>Ø Antwortzeit</th><th>Bewertung ⭐</th><th>Votes</th></tr>"
+        for i,s in enumerate(staff,1):
+            medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"#{i}"
+            resp = f"{int(s['avg_response_sec'])}s" if s['avg_response_sec'] else "–"
+            html += f"<tr><td>{medal}</td><td>&lt;@{s['staff_id']}&gt;</td><td><b>{s['tickets_closed']}</b></td><td>{s['tickets_claimed']}</td><td>{resp}</td><td>{round(s['avg'],2) if s['avg'] else '–'} ⭐</td><td>{s['rating_count']}</td></tr>"
+        if not staff:
+            html += "<tr><td colspan=7 style=color:#666>Noch keine Daten. Staff-Stats werden beim Ticket-Close automatisch erfasst.</td></tr>"
+        html += "</table><br><p><b>Mitarbeiter des Monats</b> wird automatisch an Platz #1 vergeben – perfekt für Monats-Belohnung!</p></div>"
+        return page(html)
+    @app.route("/api/revenue")
+    @owner_required
+    def api_revenue():
+        import asyncio
+        return jsonify(asyncio.run(get_revenue_summary()))
+    print(f"[*] Void_Shop v5 Dashboard → http://{DASHBOARD_HOST}:{DASHBOARD_PORT}  Login: {DASHBOARD_LOGIN_CODE}")
+    app.run(host=DASHBOARD_HOST, port=DASHBOARD_PORT, debug=False, use_reloader=False)
+
+# =====================================================================
+#  🚀 START
+# =====================================================================
+async def main():
+    await init_db()
+    # persistente Views registrieren – wichtig für Buttons nach Restart
+    try:
+        bot.add_view(TicketPanelView())
+        bot.add_view(TicketControlView())
+        bot.add_view(OneClickVerifyView())
+    except Exception as e:
+        print(f"[views] {e}")
+    if not TOKEN or TOKEN.startswith("PUT_"):
+        print("""
+╔══════════════════════════════════════════════════════════════╗
+║  ❌ DISCORD_TOKEN fehlt!                                   ║
+║                                                              ║
+║  Trage deinen Token in die .env ein:                        ║
+║    DISCORD_TOKEN=xxx                                        ║
+║    GUILD_ID=123456789                                       ║
+║    OWNER_ID=123456789                                       ║
+║    DASHBOARD_LOGIN=dein-login-code                          ║
+║                                                              ║
+║  Danach kannst du `!start` ausführen.                       ║
+║  Das Dashboard bleibt bis dahin trotzdem online.            ║
+╚══════════════════════════════════════════════════════════════╝
+""")
+        while DASHBOARD_ENABLED and HAS_FLASK:
+            await asyncio.sleep(3600)
+        await asyncio.sleep(2)
+        sys.exit(0)
+    # Stats / Housekeeping Loops starten
+    if not stats_loop.is_running():
+        try: stats_loop.start()
+        except: pass
+    if not housekeeping_loop.is_running():
+        try: housekeeping_loop.start()
+        except: pass
+    async with bot:
+        await bot.start(TOKEN)
+
+if __name__ == "__main__":
+    if DASHBOARD_ENABLED and HAS_FLASK:
+        t = threading.Thread(target=run_dashboard, daemon=True, name="VoidShopDash")
+        t.start()
+        time.sleep(1.0)
+    else:
+        print("[Dashboard] OFF – pip install Flask um zu aktivieren")
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n[+] Shutdown by user.")
+        sys.exit(0)
+    except Exception as e:
+        import traceback
+        print("\n[FATAL] Bot crashed:")
+        traceback.print_exc()
+        print("\n[!] NOT restarting automatically – fix the error above.")
+        print("    pip install discord.py aiohttp aiosqlite Flask python-dotenv")
+        sys.exit(1)
